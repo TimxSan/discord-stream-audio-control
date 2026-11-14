@@ -1,0 +1,21 @@
+{
+  "KPlugin": {
+    "Id": "org.cachy.discordstreamaudiocontrol",
+    "Name": "Discord Stream Audio Control",
+    "Description": "Mute individual audio sources in Discord streams",
+    "Icon": "org.cachy.discordstreamaudiocontrol",
+    "Category": "Multimedia",
+    "Version": "1.0",
+    "License": "MIT",
+    "EnabledByDefault": true,
+    "ServiceTypes": [
+      "Plasma/Applet"
+    ],
+    "Description[de]": "Audioquellen für Discord-Streams einzeln stummschalten"
+  },
+  "KPackageStructure": "Plasma/Applet",
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "X-Plasma-NotificationArea": "true",
+  "X-Plasma-NotificationAreaCategory": "ApplicationStatus",
+  "X-Plasma-MainScript": "ui/main.qml"
+}
