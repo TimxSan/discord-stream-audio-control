@@ -5,6 +5,7 @@ Native KDE Plasma 6 system tray widget to mute individual applications in Discor
 ## Install
 
 ```bash
+git clone https://github.com/TimxSan/discord-stream-audio-control
 ./install.sh
 ```
 
