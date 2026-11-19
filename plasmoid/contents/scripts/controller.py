@@ -5,9 +5,10 @@ import json
 import logging
 import os
 import subprocess
+import unicodedata
 from pathlib import Path
 
-from app_icons import category_for_source
+from app_icons import ApplicationResolver, category_for_source
 
 APP_ID = 'stream-audio-control'
 CONFIG = Path.home() / '.config' / APP_ID / 'settings.json'
@@ -141,16 +142,23 @@ def refresh(state):
         state['saved_links'] = {}
         state['cached_apps'] = {}
         state['icon_categories'] = {}
+        state['app_icons'] = {}
         state['active'] = False
         state['error'] = ''
         return state, nodes, ports, [], set()
 
-    live_apps, categories = {}, {}
-    for _node_id, source in active_audio_nodes(nodes, ports):
+    resolver = ApplicationResolver()
+    live_apps, categories, icons = {}, {}, {}
+    for _node_id, source in sorted(active_audio_nodes(nodes, ports)):
         key = app_key(source)
-        live_apps[key] = app_name(source)
-        binary = str(properties(source).get('application.process.binary') or '').split('/')[-1]
+        props = properties(source)
+        app = resolver.resolve(props, app_name(source))
+        if key in live_apps and (icons[key] or not app.icon):
+            continue
+        live_apps[key] = app.name
+        binary = str(props.get('application.process.binary') or '').split('/')[-1]
         categories[key] = category_for_source(key, live_apps[key], binary)
+        icons[key] = app.icon
 
     live_keys = set(live_apps)
     muted = set(state.get('muted', [])) & live_keys
@@ -175,6 +183,7 @@ def refresh(state):
     state['saved_links'] = saved
     state['cached_apps'] = live_apps
     state['icon_categories'] = categories
+    state['app_icons'] = icons
     state['active'] = True
     state['error'] = '; '.join(errors)[:500]
     return state, nodes, ports, links, live_keys
@@ -212,13 +221,21 @@ def unmute(state, key):
     return ''
 
 
+def app_sort_key(item):
+    key, name = item
+    folded = unicodedata.normalize('NFKD', name.casefold())
+    alphabetical = ''.join(character for character in folded if not unicodedata.combining(character))
+    return alphabetical, key.casefold(), key
+
+
 def response(state, config):
     hidden = set(config.get('hidden_apps', []))
     categories = state.get('icon_categories', {})
+    icons = state.get('app_icons', {})
     apps = [
-        {'key': key, 'name': name, 'iconCategory': categories.get(key, 'generic'),
+        {'key': key, 'name': name, 'icon': icons.get(key, ''), 'iconCategory': categories.get(key, 'generic'),
          'muted': key in state.get('muted', []), 'hidden': key in hidden}
-        for key, name in sorted(state.get('cached_apps', {}).items(), key=lambda item: item[1].casefold())
+        for key, name in sorted(state.get('cached_apps', {}).items(), key=app_sort_key)
     ]
     return {'active': bool(state.get('active')), 'apps': apps,
             'hiddenCount': sum(1 for app in apps if app['hidden']),

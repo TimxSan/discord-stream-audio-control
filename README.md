@@ -20,4 +20,6 @@ Uninstallation restores Discord audio links before removing the widget, its tray
 
 ## Icons
 
-The widget uses the bundled Discord tray icon, eight application category icons, and four action icons.
+The widget uses installed application icons when it can identify them and bundled category icons as a fallback. The Discord tray icon and action icons are bundled.
+
+All sources are visible by default. The widget remembers which sources you hide.

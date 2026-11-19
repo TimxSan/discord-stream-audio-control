@@ -27,6 +27,7 @@ PlasmoidItem {
         return {
             key: String(app.key || ""),
             name: String(app.name || ""),
+            icon: String(app.icon || ""),
             iconCategory: /^(voice|chat|browser|music|video|games|system)$/.test(app.iconCategory) ? app.iconCategory : "generic",
             muted: Boolean(app.muted),
             hidden: Boolean(app.hidden)
@@ -51,7 +52,7 @@ PlasmoidItem {
                 layoutChanged = true;
             }
         }
-        var fields = ["name", "iconCategory", "muted", "hidden"];
+        var fields = ["name", "icon", "iconCategory", "muted", "hidden"];
         for (var i = 0; i < wanted.length; ++i) {
             var next = wanted[i];
             var current = -1;
@@ -319,6 +320,7 @@ PlasmoidItem {
                         required property int index
                         required property string key
                         required property string name
+                        required property string icon
                         required property string iconCategory
                         required property bool muted
                         required property bool hidden
@@ -345,7 +347,9 @@ PlasmoidItem {
                             spacing: Kirigami.Units.smallSpacing * 2
 
                             Kirigami.Icon {
-                                source: Qt.resolvedUrl("../icons/fallback/" + sourceRow.iconCategory + ".png")
+                                readonly property url categoryIcon: Qt.resolvedUrl("../icons/fallback/" + sourceRow.iconCategory + ".png")
+                                source: sourceRow.icon || categoryIcon
+                                fallback: decodeURIComponent(categoryIcon.toString().replace(/^file:\/\//, ""))
                                 Layout.preferredWidth: Kirigami.Units.iconSizes.medium
                                 Layout.preferredHeight: Kirigami.Units.iconSizes.medium
                             }
@@ -372,7 +376,7 @@ PlasmoidItem {
                             PlasmaComponents.ToolButton {
                                 text: sourceRow.hidden ? i18n("Show again") : i18n("Hide")
                                 display: QQC2.AbstractButton.IconOnly
-                                icon.source: sourceRow.hidden ? "../icons/show.svg" : "../icons/hide.svg"
+                                icon.source: Qt.resolvedUrl(sourceRow.hidden ? "../icons/show.svg" : "../icons/hide.svg")
                                 visible: panelContents.hoveredRowIndex === sourceRow.index || Boolean(sourceRow.hidden)
                                 onClicked: root.request("hide", sourceRow.key)
                                 QQC2.ToolTip.visible: false
@@ -381,7 +385,7 @@ PlasmoidItem {
                             PlasmaComponents.ToolButton {
                                 text: sourceRow.muted ? i18n("Include in Discord stream") : i18n("Mute in Discord stream")
                                 display: QQC2.AbstractButton.IconOnly
-                                icon.source: sourceRow.muted ? "../icons/muted.svg" : "../icons/audible.svg"
+                                icon.source: Qt.resolvedUrl(sourceRow.muted ? "../icons/muted.svg" : "../icons/audible.svg")
                                 onClicked: root.request("mute", sourceRow.key)
                                 QQC2.ToolTip.visible: false
                             }
