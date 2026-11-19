@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -6,7 +7,6 @@ import org.kde.kirigami as Kirigami
 import org.kde.plasma.plasmoid
 import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.plasma5support as Plasma5Support
-import org.kde.taskmanager as TaskManager
 
 PlasmoidItem {
     id: root
@@ -18,18 +18,8 @@ PlasmoidItem {
     property int requestId: 0
     property int latestApplied: 0
     property var requests: ({})
-    property int rowLayoutRevision: 0
+    signal visibleRowLayoutChanged()
     onShowHiddenChanged: syncVisibleRows()
-    readonly property int hoveredRowIndex: {
-        var revision = rowLayoutRevision;
-        if (!listPointer.hovered) {
-            return -1;
-        }
-        return sourcesView.indexAt(
-            listPointer.point.position.x + sourcesView.contentX,
-            listPointer.point.position.y + sourcesView.contentY
-        );
-    }
 
     ListModel { id: visibleRows }
 
@@ -37,10 +27,7 @@ PlasmoidItem {
         return {
             key: String(app.key || ""),
             name: String(app.name || ""),
-            icon: String(app.icon || ""),
-            pid: Number(app.pid || 0),
-            appId: String(app.appId || ""),
-            binary: String(app.binary || ""),
+            iconCategory: /^(voice|chat|browser|music|video|games|system)$/.test(app.iconCategory) ? app.iconCategory : "generic",
             muted: Boolean(app.muted),
             hidden: Boolean(app.hidden)
         };
@@ -64,7 +51,7 @@ PlasmoidItem {
                 layoutChanged = true;
             }
         }
-        var fields = ["name", "icon", "pid", "appId", "binary", "muted", "hidden"];
+        var fields = ["name", "iconCategory", "muted", "hidden"];
         for (var i = 0; i < wanted.length; ++i) {
             var next = wanted[i];
             var current = -1;
@@ -92,8 +79,7 @@ PlasmoidItem {
             }
         }
         if (layoutChanged) {
-            sourcesView.forceLayout();
-            rowLayoutRevision++;
+            visibleRowLayoutChanged();
         }
     }
     readonly property string backendPath: decodeURIComponent(Qt.resolvedUrl("../scripts/bridge.py").toString().replace(/^file:\/\//, ""))
@@ -150,9 +136,9 @@ PlasmoidItem {
             return;
         }
         var id = ++requestId;
-        var command = "/usr/bin/python " + quote(backendPath) + " " + action + " " + hexEncode(key || "") + " " + id;
+        var command = "/usr/bin/python -B " + quote(backendPath) + " " + action + " " + hexEncode(key || "") + " " + id;
         if (!key) {
-            command = "/usr/bin/python " + quote(backendPath) + " " + action + " '' " + id;
+            command = "/usr/bin/python -B " + quote(backendPath) + " " + action + " '' " + id;
         }
         requests[command] = { id: id, action: action };
         if (action !== "status") {
@@ -198,9 +184,6 @@ PlasmoidItem {
         apps = response.apps || [];
         syncVisibleRows();
         errorMessage = response.error || "";
-        if (!recordingActive && expanded) {
-            expanded = false;
-        }
     }
 
     Plasma5Support.DataSource {
@@ -221,100 +204,6 @@ PlasmoidItem {
         onTriggered: root.request("status", "")
     }
 
-    function iconForSource(app) {
-        var identity = (String(app.key || "") + " " + String(app.name || "") + " " + String(app.binary || "")).toLowerCase();
-        var category = "generic";
-        if (/(webrtc|voiceengine|headset|microphone|mic|voice)/.test(identity)) {
-            category = "voice";
-        } else if (/(discord|teams|skype|element|signal|telegram)/.test(identity)) {
-            category = "chat";
-        } else if (/(zen|firefox|browser|chromium|chrome|brave|vivaldi|opera|librewolf)/.test(identity)) {
-            category = "browser";
-        } else if (/(spotify|music|vlc|rhythmbox|audacious|tidal)/.test(identity)) {
-            category = "music";
-        } else if (/(video|obs|camera|screen|stream|capture)/.test(identity)) {
-            category = "video";
-        } else if (/(\.exe|game|proton|wine|lutris)/.test(identity)) {
-            category = "games";
-        } else if (/(system|daemon|notification|pipewire|wireplumber)/.test(identity)) {
-            category = "system";
-        }
-        return Qt.resolvedUrl("../icons/fallback/" + category + ".png");
-    }
-
-
-    TaskManager.TasksModel {
-        id: plasmaTasks
-        groupMode: TaskManager.TasksModel.GroupDisabled
-        filterByScreen: false
-        filterByVirtualDesktop: false
-        filterByActivity: false
-        filterHidden: false
-        separateLaunchers: false
-    }
-
-    Item {
-        id: taskMetadata
-        visible: false
-        width: 0
-        height: 0
-
-        Repeater {
-            id: taskRepeater
-            model: plasmaTasks
-            delegate: Item {
-                width: 0
-                height: 0
-                visible: false
-                readonly property string taskAppId: String(model.AppId || "")
-                readonly property string taskAppName: String(model.AppName || "")
-                readonly property int taskPid: Number(model.AppPid || 0)
-                readonly property bool taskIsWindow: Boolean(model.IsWindow)
-                readonly property var taskIcon: model.decoration
-            }
-        }
-    }
-
-    function normalizeTaskIdentity(value) {
-        return String(value || "").toLowerCase().replace(/\.desktop$/, "")
-            .replace(/\.exe$/, "").replace(/[^a-z0-9]+/g, "");
-    }
-
-    function taskIconForSource(app) {
-        var pid = Number(app.pid || 0);
-        var appId = normalizeTaskIdentity(app.appId);
-        var name = normalizeTaskIdentity(app.name);
-        var key = normalizeTaskIdentity(app.key);
-        var binary = normalizeTaskIdentity(app.binary);
-        var best = null;
-        var bestScore = 0;
-        for (var i = 0; i < taskRepeater.count; ++i) {
-            var task = taskRepeater.itemAt(i);
-            if (!task || !task.taskIsWindow || !task.taskIcon) {
-                continue;
-            }
-            var taskId = normalizeTaskIdentity(task.taskAppId);
-            var taskName = normalizeTaskIdentity(task.taskAppName);
-            var score = 0;
-            if (pid > 0 && task.taskPid > 0 && pid === task.taskPid) {
-                score = 100;
-            } else if (appId && appId === taskId) {
-                score = 90;
-            } else if (binary && taskId && binary === taskId) {
-                score = 80;
-            } else if (name && name.length >= 4 && (name === taskName || name === taskId)) {
-                score = 70;
-            } else if (key && key.length >= 4 && (key === taskName || key === taskId)) {
-                score = 60;
-            }
-            if (score > bestScore) {
-                bestScore = score;
-                best = task.taskIcon;
-            }
-        }
-        return bestScore >= 60 ? best : null;
-    }
-
     fullRepresentation: Item {
         id: panelContents
         Layout.minimumWidth: 370
@@ -323,6 +212,26 @@ PlasmoidItem {
         Layout.preferredHeight: 440
         Layout.maximumWidth: 440
         Layout.maximumHeight: 550
+
+        property int rowLayoutRevision: 0
+        readonly property int hoveredRowIndex: {
+            var revision = rowLayoutRevision;
+            if (!listPointer.hovered) {
+                return -1;
+            }
+            return sourcesView.indexAt(
+                listPointer.point.position.x + sourcesView.contentX,
+                listPointer.point.position.y + sourcesView.contentY
+            );
+        }
+
+        Connections {
+            target: root
+            function onVisibleRowLayoutChanged() {
+                sourcesView.forceLayout();
+                panelContents.rowLayoutRevision++;
+            }
+        }
 
         ColumnLayout {
             anchors.fill: parent
@@ -410,10 +319,7 @@ PlasmoidItem {
                         required property int index
                         required property string key
                         required property string name
-                        required property string icon
-                        required property int pid
-                        required property string appId
-                        required property string binary
+                        required property string iconCategory
                         required property bool muted
                         required property bool hidden
                         width: ListView.view.width
@@ -425,7 +331,7 @@ PlasmoidItem {
                             anchors.rightMargin: 2
                             anchors.topMargin: 2
                             anchors.bottomMargin: 2
-                            visible: root.hoveredRowIndex === sourceRow.index
+                            visible: panelContents.hoveredRowIndex === sourceRow.index
                             color: "#264A5C"
                             border.color: "#3DAEE9"
                             border.width: 1
@@ -439,8 +345,7 @@ PlasmoidItem {
                             spacing: Kirigami.Units.smallSpacing * 2
 
                             Kirigami.Icon {
-                                source: root.taskIconForSource(sourceRow) || sourceRow.icon || root.iconForSource(sourceRow)
-                                fallback: "audio-x-generic"
+                                source: Qt.resolvedUrl("../icons/fallback/" + sourceRow.iconCategory + ".png")
                                 Layout.preferredWidth: Kirigami.Units.iconSizes.medium
                                 Layout.preferredHeight: Kirigami.Units.iconSizes.medium
                             }
@@ -467,8 +372,8 @@ PlasmoidItem {
                             PlasmaComponents.ToolButton {
                                 text: sourceRow.hidden ? i18n("Show again") : i18n("Hide")
                                 display: QQC2.AbstractButton.IconOnly
-                                icon.name: sourceRow.hidden ? "edit-undo" : "window-close"
-                                visible: root.hoveredRowIndex === sourceRow.index || Boolean(sourceRow.hidden)
+                                icon.source: sourceRow.hidden ? "../icons/show.svg" : "../icons/hide.svg"
+                                visible: panelContents.hoveredRowIndex === sourceRow.index || Boolean(sourceRow.hidden)
                                 onClicked: root.request("hide", sourceRow.key)
                                 QQC2.ToolTip.visible: false
                             }
@@ -476,7 +381,7 @@ PlasmoidItem {
                             PlasmaComponents.ToolButton {
                                 text: sourceRow.muted ? i18n("Include in Discord stream") : i18n("Mute in Discord stream")
                                 display: QQC2.AbstractButton.IconOnly
-                                icon.name: sourceRow.muted ? "audio-volume-muted" : "audio-volume-high"
+                                icon.source: sourceRow.muted ? "../icons/muted.svg" : "../icons/audible.svg"
                                 onClicked: root.request("mute", sourceRow.key)
                                 QQC2.ToolTip.visible: false
                             }

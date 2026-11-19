@@ -7,7 +7,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from app_icons import IconResolver
+from app_icons import category_for_source
 
 APP_ID = 'stream-audio-control'
 CONFIG = Path.home() / '.config' / APP_ID / 'settings.json'
@@ -140,26 +140,17 @@ def refresh(state):
         state['muted'] = []
         state['saved_links'] = {}
         state['cached_apps'] = {}
-        state['cached_icons'] = {}
-        state['cached_meta'] = {}
+        state['icon_categories'] = {}
         state['active'] = False
         state['error'] = ''
         return state, nodes, ports, [], set()
 
-    icons = IconResolver()
-    previous_icons = state.get('cached_icons', {})
-    live_apps, live_icons, live_meta = {}, {}, {}
+    live_apps, categories = {}, {}
     for _node_id, source in active_audio_nodes(nodes, ports):
         key = app_key(source)
         live_apps[key] = app_name(source)
-        p = properties(source)
-        live_meta[key] = {
-            'appId': str(p.get('application.id') or ''),
-            'binary': str(p.get('application.process.binary') or '').split('/')[-1],
-            'pid': int(p.get('application.process.id') or 0) if str(p.get('application.process.id') or '').isdigit() else 0,
-        }
-        live_icons[key] = previous_icons.get(key) or icons.resolve(p, key=key, name=live_apps[key])
-
+        binary = str(properties(source).get('application.process.binary') or '').split('/')[-1]
+        categories[key] = category_for_source(key, live_apps[key], binary)
 
     live_keys = set(live_apps)
     muted = set(state.get('muted', [])) & live_keys
@@ -183,8 +174,7 @@ def refresh(state):
     state['muted'] = sorted(muted)
     state['saved_links'] = saved
     state['cached_apps'] = live_apps
-    state['cached_icons'] = live_icons
-    state['cached_meta'] = live_meta
+    state['icon_categories'] = categories
     state['active'] = True
     state['error'] = '; '.join(errors)[:500]
     return state, nodes, ports, links, live_keys
@@ -224,8 +214,10 @@ def unmute(state, key):
 
 def response(state, config):
     hidden = set(config.get('hidden_apps', []))
+    categories = state.get('icon_categories', {})
     apps = [
-        {'key': key, 'name': name, 'icon': state.get('cached_icons', {}).get(key, ''), **state.get('cached_meta', {}).get(key, {}), 'muted': key in state.get('muted', []), 'hidden': key in hidden}
+        {'key': key, 'name': name, 'iconCategory': categories.get(key, 'generic'),
+         'muted': key in state.get('muted', []), 'hidden': key in hidden}
         for key, name in sorted(state.get('cached_apps', {}).items(), key=lambda item: item[1].casefold())
     ]
     return {'active': bool(state.get('active')), 'apps': apps,
@@ -238,6 +230,8 @@ def handle(action, key=''):
     with LOCK.open('a+b') as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         state = load_json(STATE, {'muted': [], 'saved_links': {}, 'cached_apps': {}, 'active': False, 'error': ''})
+        state.pop('cached_icons', None)
+        state.pop('cached_meta', None)
         config = load_json(CONFIG, {'hidden_apps': []})
         if action == 'toggle-hide':
             hidden = set(config.get('hidden_apps', []))

@@ -13,13 +13,14 @@ def main():
     args = parser.parse_args()
     try:
         key = bytes.fromhex(args.key).decode('utf-16-be') if args.key else ''
-    except (UnicodeError, ValueError):
+    except ValueError:
         parser.error('Invalid audio source key')
-    try:
-        result = handle({'mute': 'toggle-mute', 'hide': 'toggle-hide'}.get(args.action, args.action), key)
-    except Exception as exc:
-        result = {'active': False, 'apps': [], 'hiddenCount': 0, 'error': str(exc)[:240]}
-    print(json.dumps(result, ensure_ascii=False, separators=(',', ':')))
+    else:
+        try:
+            result = handle({'mute': 'toggle-mute', 'hide': 'toggle-hide'}.get(args.action, args.action), key)
+        except Exception as exc:
+            result = {'active': False, 'apps': [], 'hiddenCount': 0, 'error': str(exc)[:240]}
+        print(json.dumps(result, ensure_ascii=False, separators=(',', ':')))
 
 
 if __name__ == '__main__':

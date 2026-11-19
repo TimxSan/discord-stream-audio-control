@@ -10,14 +10,18 @@ for (var panel of panels()) {
             tray = desktopById(Number(containmentId)) || widget;
         }
         tray.currentConfigGroup = ["General"];
-        var original = String(tray.readConfig("extraItems") || "").split(",").filter(function(item) {
-            return item.length > 0;
-        });
-        var updated = original.filter(function(item) {
-            return item !== widgetName;
-        });
-        if (original.length !== updated.length) {
-            tray.writeConfig("extraItems", updated);
+        var changed = false;
+        for (var key of ["extraItems", "shownItems", "hiddenItems", "knownItems"]) {
+            var original = String(tray.readConfig(key) || "").split(",");
+            var updated = original.filter(function(item) {
+                return item !== widgetName;
+            });
+            if (original.length !== updated.length) {
+                tray.writeConfig(key, updated);
+                changed = true;
+            }
+        }
+        if (changed) {
             tray.reloadConfig();
         }
     }
