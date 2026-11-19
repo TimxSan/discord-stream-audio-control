@@ -134,18 +134,9 @@ def active_audio_nodes(nodes, ports):
             yield node_id, node
 
 
-def refresh(state):
+def refresh(state, remembered=()):
     data = json.loads(command('pw-dump'))
     nodes, ports, captures, links = build_graph(data)
-    if not captures:
-        state['muted'] = []
-        state['saved_links'] = {}
-        state['cached_apps'] = {}
-        state['icon_categories'] = {}
-        state['app_icons'] = {}
-        state['active'] = False
-        state['error'] = ''
-        return state, nodes, ports, [], set()
 
     resolver = ApplicationResolver()
     live_apps, categories, icons = {}, {}, {}
@@ -161,8 +152,11 @@ def refresh(state):
         icons[key] = app.icon
 
     live_keys = set(live_apps)
-    muted = set(state.get('muted', [])) & live_keys
-    saved = {key: records for key, records in state.get('saved_links', {}).items() if key in live_keys}
+    muted = set()
+    saved = {}
+    if captures:
+        muted = (set(state.get('muted', [])) | set(remembered)) & live_keys
+        saved = {key: records for key, records in state.get('saved_links', {}).items() if key in live_keys}
     disconnect = set()
     errors = []
     for output_id, input_id, source in links:
@@ -184,7 +178,7 @@ def refresh(state):
     state['cached_apps'] = live_apps
     state['icon_categories'] = categories
     state['app_icons'] = icons
-    state['active'] = True
+    state['active'] = bool(captures)
     state['error'] = '; '.join(errors)[:500]
     return state, nodes, ports, links, live_keys
 
@@ -229,16 +223,18 @@ def app_sort_key(item):
 
 
 def response(state, config):
-    hidden = set(config.get('hidden_apps', []))
+    remember_muted = bool(config.get('remember_muted'))
+    muted = set(state.get('muted', []))
+    if remember_muted:
+        muted.update(config.get('muted_apps', []))
     categories = state.get('icon_categories', {})
     icons = state.get('app_icons', {})
     apps = [
         {'key': key, 'name': name, 'icon': icons.get(key, ''), 'iconCategory': categories.get(key, 'generic'),
-         'muted': key in state.get('muted', []), 'hidden': key in hidden}
+         'muted': key in muted}
         for key, name in sorted(state.get('cached_apps', {}).items(), key=app_sort_key)
     ]
-    return {'active': bool(state.get('active')), 'apps': apps,
-            'hiddenCount': sum(1 for app in apps if app['hidden']),
+    return {'active': bool(state.get('active')), 'rememberMuted': remember_muted, 'apps': apps,
             'error': state.get('error', '')}
 
 
@@ -249,34 +245,47 @@ def handle(action, key=''):
         state = load_json(STATE, {'muted': [], 'saved_links': {}, 'cached_apps': {}, 'active': False, 'error': ''})
         state.pop('cached_icons', None)
         state.pop('cached_meta', None)
-        config = load_json(CONFIG, {'hidden_apps': []})
-        if action == 'toggle-hide':
-            hidden = set(config.get('hidden_apps', []))
-            if key in hidden:
-                hidden.remove(key)
-            else:
-                hidden.add(key)
-            config['hidden_apps'] = sorted(hidden)
-            save_json(CONFIG, config)
+        config = load_json(CONFIG, {})
+        remember_muted = bool(config.get('remember_muted'))
+        remembered = set(config.get('muted_apps', [])) if remember_muted else set()
         try:
-            state, nodes, ports, links, _keys = refresh(state)
-            if action == 'reset' and state['active']:
+            restore_all = action in ('share-all', 'reset')
+            apply_remembered = not restore_all and (action, key) != ('set-remember', 'off')
+            state, _, _, _, live_keys = refresh(state, remembered if apply_remembered else ())
+            if restore_all and (action == 'reset' or state['active']):
                 failures = []
                 for muted_key in list(state.get('muted', [])):
                     failure = unmute(state, muted_key)
                     if failure:
                         failures.append(failure)
                 state['error'] = '; '.join(failures)[:500]
-            if action == 'toggle-mute' and state['active']:
-                muted = set(state['muted'])
-                if key in muted:
-                    state['error'] = unmute(state, key)
+                if not failures:
+                    remembered.clear()
+                elif action == 'share-all':
+                    remembered.intersection_update(state['muted'])
+            elif action == 'set-remember' and (key == 'on') != remember_muted:
+                remember_muted = key == 'on'
+                remembered = set(state['muted']) if remember_muted else set()
+            elif action == 'toggle-mute' and key in live_keys and (state['active'] or remember_muted):
+                if key in state['muted'] or key in remembered:
+                    failure = unmute(state, key) if state['active'] else ''
+                    if failure:
+                        state['error'] = failure
+                    else:
+                        remembered.discard(key)
                 else:
-                    muted.add(key)
-                    state['muted'] = sorted(muted)
-                    state, nodes, ports, links, _keys = refresh(state)
+                    if remember_muted:
+                        remembered.add(key)
+                    if state['active']:
+                        state['muted'] = sorted(set(state['muted']) | {key})
+                        state, _, _, _, _ = refresh(state, remembered)
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
             state['error'] = f'PipeWire: {exc}'
             logging.exception('PipeWire request failed')
         save_json(STATE, state)
+        muted_apps = sorted(remembered)
+        if remember_muted != bool(config.get('remember_muted')) or muted_apps != config.get('muted_apps', []):
+            config['remember_muted'] = remember_muted
+            config['muted_apps'] = muted_apps
+            save_json(CONFIG, config)
     return response(state, config)

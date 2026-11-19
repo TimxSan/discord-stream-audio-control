@@ -22,4 +22,6 @@ Uninstallation restores Discord audio links before removing the widget, its tray
 
 The widget uses installed application icons when it can identify them and bundled category icons as a fallback. The Discord tray icon and action icons are bundled.
 
-All sources are visible by default. The widget remembers which sources you hide.
+The widget lists all current audio sources even when no Discord stream is active.
+
+Turn on **Save mutes** to save your selections across streams and choose apps to mute before sharing. Turning it off clears the saved selection and keeps any mutes for the current stream. Use **Share all audio** during a share to restore audio and clear saved mutes.

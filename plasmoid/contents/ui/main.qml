@@ -12,14 +12,13 @@ PlasmoidItem {
     id: root
 
     property bool recordingActive: false
-    property bool showHidden: false
+    property bool rememberMuted: false
     property var apps: []
     property string errorMessage: ""
     property int requestId: 0
-    property int latestApplied: 0
-    property var requests: ({})
+    property string activeCommand: ""
+    property var queuedActions: []
     signal visibleRowLayoutChanged()
-    onShowHiddenChanged: syncVisibleRows()
 
     ListModel { id: visibleRows }
 
@@ -29,19 +28,15 @@ PlasmoidItem {
             name: String(app.name || ""),
             icon: String(app.icon || ""),
             iconCategory: /^(voice|chat|browser|music|video|games|system)$/.test(app.iconCategory) ? app.iconCategory : "generic",
-            muted: Boolean(app.muted),
-            hidden: Boolean(app.hidden)
+            muted: Boolean(app.muted)
         };
     }
 
     function syncVisibleRows() {
         var wanted = [];
-        var keep = {};
+        var keep = Object.create(null);
         for (var n = 0; n < apps.length; ++n) {
             var row = normalizedRow(apps[n]);
-            if (row.hidden !== showHidden) {
-                continue;
-            }
             wanted.push(row);
             keep[row.key] = true;
         }
@@ -52,7 +47,7 @@ PlasmoidItem {
                 layoutChanged = true;
             }
         }
-        var fields = ["name", "icon", "iconCategory", "muted", "hidden"];
+        var fields = ["name", "icon", "iconCategory", "muted"];
         for (var i = 0; i < wanted.length; ++i) {
             var next = wanted[i];
             var current = -1;
@@ -87,8 +82,8 @@ PlasmoidItem {
 
     Plasmoid.icon: "org.cachy.discordstreamaudiocontrol"
     Plasmoid.title: "Discord Stream Audio Control"
-    toolTipMainText: "Discord Stream Audio Control"
-    toolTipSubText: i18n("Select audio sources for Discord streams")
+    toolTipMainText: ""
+    toolTipSubText: ""
     hideOnWindowDeactivate: true
     Plasmoid.status: root.recordingActive ? PlasmaCore.Types.ActiveStatus : PlasmaCore.Types.PassiveStatus
     Plasmoid.hasConfigurationInterface: false
@@ -109,21 +104,19 @@ PlasmoidItem {
         return "'" + value.replace(/'/g, "'\\''") + "'";
     }
 
-    property int pendingActions: 0
-    property int pendingStatusRequests: 0
-
     function optimisticUpdate(action, key) {
-        if (action === "status") {
-            return;
+        if (action === "set-remember") {
+            rememberMuted = key === "on";
+            if (rememberMuted || recordingActive) {
+                return;
+            }
         }
         var updated = [];
         for (var i = 0; i < apps.length; ++i) {
             var next = Object.assign({}, apps[i]);
             if (action === "mute" && next.key === key) {
                 next.muted = !Boolean(next.muted);
-            } else if (action === "hide" && next.key === key) {
-                next.hidden = !Boolean(next.hidden);
-            } else if (action === "reset") {
+            } else if (action === "set-remember" || action === "share-all") {
                 next.muted = false;
             }
             updated.push(next);
@@ -133,46 +126,34 @@ PlasmoidItem {
     }
 
     function request(action, key) {
-        if (action === "status" && (pendingActions > 0 || pendingStatusRequests > 0)) {
+        if (action !== "status") {
+            optimisticUpdate(action, key);
+        }
+        if (activeCommand) {
+            if (action !== "status") {
+                queuedActions.push({ action: action, key: key });
+            }
             return;
         }
-        var id = ++requestId;
-        var command = "/usr/bin/python -B " + quote(backendPath) + " " + action + " " + hexEncode(key || "") + " " + id;
-        if (!key) {
-            command = "/usr/bin/python -B " + quote(backendPath) + " " + action + " '' " + id;
-        }
-        requests[command] = { id: id, action: action };
-        if (action !== "status") {
-            pendingActions++;
-            latestApplied = id;
-            optimisticUpdate(action, key);
-        } else {
-            pendingStatusRequests++;
-        }
-        commandEngine.connectSource(command);
+        startRequest(action, key);
+    }
+
+    function startRequest(action, key) {
+        var argument = key ? hexEncode(key) : "''";
+        activeCommand = "/usr/bin/python -B " + quote(backendPath) + " " + action + " " + argument + " " + (++requestId);
+        commandEngine.connectSource(activeCommand);
     }
 
     function updateState(source, data) {
-        var context = requests[source];
-        delete requests[source];
-        if (!context) {
+        if (source !== activeCommand) {
             return;
         }
-        if (context.action === "status") {
-            pendingStatusRequests = Math.max(0, pendingStatusRequests - 1);
-        }
-        if (context.action !== "status") {
-            pendingActions = Math.max(0, pendingActions - 1);
-            if (pendingActions > 0) {
-                return;
-            }
-            request("status", "");
-        } else if (pendingActions > 0) {
+        if (queuedActions.length > 0) {
+            const next = queuedActions.shift();
+            startRequest(next.action, next.key);
             return;
         }
-        if (context.id < latestApplied) {
-            return;
-        }
+        activeCommand = "";
         var response;
         try {
             response = JSON.parse(data["stdout"] || "{}");
@@ -180,8 +161,8 @@ PlasmoidItem {
             errorMessage = i18n("Invalid backend response: %1", ex);
             return;
         }
-        latestApplied = context.id;
         recordingActive = Boolean(response.active);
+        rememberMuted = Boolean(response.rememberMuted);
         apps = response.apps || [];
         syncVisibleRows();
         errorMessage = response.error || "";
@@ -246,22 +227,16 @@ PlasmoidItem {
                 spacing: Kirigami.Units.smallSpacing
 
                 PlasmaComponents.Switch {
-                    id: hiddenSwitch
                     Layout.fillWidth: true
-                    text: i18n("Show hidden")
-                    checked: root.showHidden
-                    onToggled: root.showHidden = checked
-                    QQC2.ToolTip.text: i18n("Show hidden audio sources")
-                    QQC2.ToolTip.visible: hovered
+                    text: i18n("Save mutes")
+                    checked: root.rememberMuted
+                    onToggled: root.request("set-remember", checked ? "on" : "off")
                 }
 
                 PlasmaComponents.ToolButton {
-                    id: resetButton
                     text: i18n("Share all audio")
-                    enabled: root.recordingActive && root.apps.some(function(a) { return Boolean(a.muted); })
-                    onClicked: root.request("reset", "")
-                    QQC2.ToolTip.text: i18n("Include all audio in the stream")
-                    QQC2.ToolTip.visible: hovered
+                    enabled: root.recordingActive && root.apps.some(function(app) { return app.muted; })
+                    onClicked: root.request("share-all", "")
                 }
             }
 
@@ -274,7 +249,7 @@ PlasmoidItem {
                 spacing: Kirigami.Units.smallSpacing
 
                 PlasmaComponents.Label {
-                    text: root.showHidden ? i18n("Hidden audio sources") : i18n("Audio sources")
+                    text: i18n("Audio sources")
                     color: Kirigami.Theme.disabledTextColor
                     font.bold: true
                     font.pixelSize: Kirigami.Theme.smallFont.pixelSize
@@ -292,10 +267,10 @@ PlasmoidItem {
                 Layout.leftMargin: Kirigami.Units.smallSpacing * 2
                 Layout.rightMargin: Kirigami.Units.smallSpacing * 2
                 Layout.bottomMargin: Kirigami.Units.smallSpacing
-                visible: root.errorMessage.length > 0
-                text: root.errorMessage
+                visible: text.length > 0
+                text: root.errorMessage || (!root.recordingActive && root.apps.length > 0 ? i18n("No active Discord stream") : "")
                 wrapMode: Text.WordWrap
-                color: Kirigami.Theme.negativeTextColor
+                color: root.errorMessage ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.disabledTextColor
                 font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             }
 
@@ -323,7 +298,6 @@ PlasmoidItem {
                         required property string icon
                         required property string iconCategory
                         required property bool muted
-                        required property bool hidden
                         width: ListView.view.width
                         height: Kirigami.Units.gridUnit * 2.75
 
@@ -365,8 +339,10 @@ PlasmoidItem {
                                 }
                                 PlasmaComponents.Label {
                                     Layout.fillWidth: true
-                                    text: sourceRow.muted ? i18n("Muted in Discord stream") :
-                                          sourceRow.hidden ? i18n("Hidden from list") : i18n("Being shared")
+                                    visible: text.length > 0
+                                    text: sourceRow.muted ? (root.recordingActive ? i18n("Muted in Discord stream") :
+                                                                                  i18n("Muted for next stream")) :
+                                          root.recordingActive ? i18n("Being shared") : ""
                                     elide: Text.ElideRight
                                     color: Kirigami.Theme.disabledTextColor
                                     font.pixelSize: Kirigami.Theme.smallFont.pixelSize
@@ -374,20 +350,16 @@ PlasmoidItem {
                             }
 
                             PlasmaComponents.ToolButton {
-                                text: sourceRow.hidden ? i18n("Show again") : i18n("Hide")
-                                display: QQC2.AbstractButton.IconOnly
-                                icon.source: Qt.resolvedUrl(sourceRow.hidden ? "../icons/show.svg" : "../icons/hide.svg")
-                                visible: panelContents.hoveredRowIndex === sourceRow.index || Boolean(sourceRow.hidden)
-                                onClicked: root.request("hide", sourceRow.key)
-                                QQC2.ToolTip.visible: false
-                            }
-
-                            PlasmaComponents.ToolButton {
-                                text: sourceRow.muted ? i18n("Include in Discord stream") : i18n("Mute in Discord stream")
+                                id: muteButton
+                                text: sourceRow.muted ? i18n("Unmute") : i18n("Mute")
+                                hoverEnabled: true
+                                enabled: root.recordingActive || root.rememberMuted
                                 display: QQC2.AbstractButton.IconOnly
                                 icon.source: Qt.resolvedUrl(sourceRow.muted ? "../icons/muted.svg" : "../icons/audible.svg")
                                 onClicked: root.request("mute", sourceRow.key)
-                                QQC2.ToolTip.visible: false
+                                QQC2.ToolTip.text: muteButton.text
+                                QQC2.ToolTip.visible: muteButton.enabled && muteButton.hovered
+                                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
                             }
                         }
                     }
@@ -398,7 +370,7 @@ PlasmoidItem {
                     anchors.verticalCenter: parent.verticalCenter
                     visible: visibleRows.count === 0
                     color: Kirigami.Theme.disabledTextColor
-                    text: root.showHidden ? i18n("No hidden applications") : i18n("No audio sources detected")
+                    text: i18n("No audio sources detected")
                 }
             }
         }
