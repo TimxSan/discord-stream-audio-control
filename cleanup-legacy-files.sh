@@ -6,8 +6,7 @@ remove_legacy_files() {
   local launcher="$HOME/.local/bin/stream-audio-control"
   local entry line
 
-  rm -f -- "$icon_home/scalable/apps/$widget_id.svg" \
-    "$icon_home"/{32x32,48x48,64x64,128x128,256x256,512x512}/apps/"$widget_id.png"
+  rm -f -- "$icon_home/scalable/apps/$widget_id.svg"
 
   if [[ ! -L "$legacy_data" && ! -L "$legacy_icons" ]]; then
     rm -f -- "$legacy_icons"/{voice,system,video,generic,music,games,browser,chat}.png

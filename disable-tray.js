@@ -5,9 +5,12 @@ for (var panel of panels()) {
             continue;
         }
         var tray = widget;
-        var containmentId = widget.readConfig("SystrayContainmentId");
-        if (containmentId) {
-            tray = desktopById(Number(containmentId)) || widget;
+        var containmentId = Number(widget.readConfig("SystrayContainmentId"));
+        if (Number.isInteger(containmentId) && containmentId > 0) {
+            var legacyTray = desktopById(containmentId);
+            if (legacyTray && legacyTray.type === "org.kde.plasma.private.systemtray") {
+                tray = legacyTray;
+            }
         }
         tray.currentConfigGroup = ["General"];
         var changed = false;

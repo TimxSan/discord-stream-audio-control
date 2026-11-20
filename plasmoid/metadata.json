@@ -3,9 +3,9 @@
     "Id": "org.cachy.discordstreamaudiocontrol",
     "Name": "Discord Stream Audio Control",
     "Description": "Mute individual audio sources in Discord streams",
-    "Icon": "/icons/discord-stream-audio-control.png",
+    "Icon": "org.cachy.discordstreamaudiocontrol",
     "Category": "Multimedia",
-    "Version": "1.1.19",
+    "Version": "1.3",
     "License": "MIT",
     "EnabledByDefault": true,
     "ServiceTypes": [

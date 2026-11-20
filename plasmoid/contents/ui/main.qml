@@ -12,34 +12,53 @@ PlasmoidItem {
     id: root
 
     property bool recordingActive: false
-    property bool hasUnlistedMutes: false
-    property var apps: []
+    property bool confirmedUnlistedMutes: false
+    property var confirmedApps: []
+    property bool hasMutes: false
     property string errorMessage: ""
     property int requestId: 0
-    property string activeCommand: ""
+    readonly property string requestNamespace: Math.random().toString(36).slice(2)
+    property var activeRequest: null
     property var queuedActions: []
     signal visibleRowLayoutChanged()
 
     ListModel { id: visibleRows }
 
-    function normalizedRow(app) {
+    function normalizedRow(app, muted) {
         return {
             key: String(app.key || ""),
             name: String(app.name || ""),
             icon: String(app.icon || ""),
             iconCategory: /^(voice|chat|browser|music|video|games|system)$/.test(app.iconCategory) ? app.iconCategory : "generic",
-            muted: Boolean(app.muted)
+            shared: Boolean(app.shared),
+            muted: muted
         };
     }
 
     function syncVisibleRows() {
+        let clearMutes = false;
+        let pendingMutes = Object.create(null);
+        const actions = activeRequest ? [activeRequest, ...queuedActions] : queuedActions;
+        for (const action of actions) {
+            if (action.action === "share-all") {
+                clearMutes = true;
+                pendingMutes = Object.create(null);
+            } else if (action.key) {
+                pendingMutes[action.key] = action.action === "set-muted";
+            }
+        }
+
+        let anyMutes = confirmedUnlistedMutes && !clearMutes;
         var wanted = [];
         var keep = Object.create(null);
-        for (var n = 0; n < apps.length; ++n) {
-            var row = normalizedRow(apps[n]);
+        for (const app of confirmedApps) {
+            const pendingMute = pendingMutes[app.key];
+            var row = normalizedRow(app, pendingMute ?? (!clearMutes && Boolean(app.muted)));
             wanted.push(row);
             keep[row.key] = true;
+            anyMutes = anyMutes || row.muted;
         }
+        hasMutes = anyMutes;
         var layoutChanged = false;
         for (var j = visibleRows.count - 1; j >= 0; --j) {
             if (!keep[visibleRows.get(j).key]) {
@@ -47,7 +66,7 @@ PlasmoidItem {
                 layoutChanged = true;
             }
         }
-        var fields = ["name", "icon", "iconCategory", "muted"];
+        var fields = ["name", "icon", "iconCategory", "shared", "muted"];
         for (var i = 0; i < wanted.length; ++i) {
             var next = wanted[i];
             var current = -1;
@@ -80,8 +99,7 @@ PlasmoidItem {
     }
     readonly property string backendPath: decodeURIComponent(Qt.resolvedUrl("../scripts/bridge.py").toString().replace(/^file:\/\//, ""))
 
-    Plasmoid.icon: decodeURIComponent(Qt.resolvedUrl(".." + Plasmoid.metaData.iconName).toString().replace(/^file:\/\//, ""))
-    Plasmoid.title: "Discord Stream Audio Control"
+    Plasmoid.icon: decodeURIComponent(Qt.resolvedUrl("../icons/discord-stream-audio-control.png").toString().replace(/^file:\/\//, ""))
     toolTipMainText: ""
     toolTipSubText: ""
     hideOnWindowDeactivate: true
@@ -104,75 +122,106 @@ PlasmoidItem {
         return "'" + value.replace(/'/g, "'\\''") + "'";
     }
 
-    function optimisticUpdate(action, key) {
-        if (action === "share-all") {
-            hasUnlistedMutes = false;
-        }
-        var updated = [];
-        for (var i = 0; i < apps.length; ++i) {
-            var next = Object.assign({}, apps[i]);
-            if (action === "mute" && next.key === key) {
-                next.muted = !Boolean(next.muted);
-            } else if (action === "share-all") {
-                next.muted = false;
-            }
-            updated.push(next);
-        }
-        apps = updated;
-        syncVisibleRows();
-    }
-
     function request(action, key) {
-        if (action !== "status") {
-            optimisticUpdate(action, key);
-        }
-        if (activeCommand) {
-            if (action !== "status") {
-                queuedActions.push({ action: action, key: key });
+        if (action === "status") {
+            if (!activeRequest && queuedActions.length === 0) {
+                startRequest(action, key);
             }
             return;
         }
-        startRequest(action, key);
+        queuedActions = action === "share-all" ? [] : queuedActions.filter(entry => entry.key !== key);
+        queuedActions.push({ action: action, key: key });
+        startNextAction();
+        syncVisibleRows();
+    }
+
+    function startNextAction() {
+        if (!activeRequest && queuedActions.length > 0) {
+            const next = queuedActions.shift();
+            startRequest(next.action, next.key);
+        }
     }
 
     function startRequest(action, key) {
-        var argument = key ? hexEncode(key) : "''";
-        activeCommand = "/usr/bin/python -B " + quote(backendPath) + " " + action + " " + argument + " " + (++requestId);
-        commandEngine.connectSource(activeCommand);
+        const nonce = requestNamespace + "-" + (++requestId);
+        const argument = key ? hexEncode(key) : "''";
+        const command = "/usr/bin/python3 -B " + quote(backendPath) + " " + action + " " + argument + " " + nonce;
+        activeRequest = requestSource.createObject(root, { action: action, key: key, command: command });
+        if (activeRequest) {
+            requestTimeout.restart();
+            activeRequest.connectSource(command);
+        } else {
+            errorMessage = i18n("The audio backend did not respond.");
+            Qt.callLater(root.startNextAction);
+        }
     }
 
-    function updateState(source, data) {
-        if (source !== activeCommand) {
+    function completeRequest(worker, data) {
+        if (!worker || worker !== activeRequest) {
             return;
         }
-        if (queuedActions.length > 0) {
-            const next = queuedActions.shift();
-            startRequest(next.action, next.key);
-            return;
+        requestTimeout.stop();
+        worker.disconnectSource(worker.command);
+        activeRequest = null;
+        worker.destroy();
+
+        if (!data) {
+            errorMessage = i18n("The audio backend did not respond.");
+        } else if (data["exit code"] !== 0) {
+            errorMessage = i18n("Audio backend error: %1", String(data["stderr"] || data["exit code"]).trim().slice(0, 240));
+        } else {
+            try {
+                const reply = JSON.parse(data["stdout"]);
+                if (!reply || typeof reply.error !== "string") {
+                    throw new Error("Missing backend status");
+                }
+                if (reply.apps !== undefined) {
+                    if (!Array.isArray(reply.apps) || typeof reply.active !== "boolean" ||
+                        !reply.apps.every(app => app && typeof app.key === "string" && app.key &&
+                            typeof app.name === "string" && typeof app.icon === "string" &&
+                            typeof app.iconCategory === "string")) {
+                        throw new Error("Invalid audio source data");
+                    }
+                    const liveKeys = new Set(reply.apps.map(app => app.key));
+                    if (liveKeys.size !== reply.apps.length) {
+                        throw new Error("Duplicate audio source key");
+                    }
+                    recordingActive = reply.active;
+                    confirmedUnlistedMutes = Boolean(reply.hasUnlistedMutes);
+                    confirmedApps = reply.apps;
+                    queuedActions = queuedActions.filter(entry => !entry.key || liveKeys.has(entry.key));
+                } else if (!reply.error) {
+                    throw new Error("No audio source data");
+                }
+                errorMessage = reply.error ? i18n("Audio backend error: %1", reply.error) : "";
+            } catch (ex) {
+                errorMessage = i18n("Invalid backend response: %1", String(ex).slice(0, 240));
+            }
         }
-        activeCommand = "";
-        var response;
-        try {
-            response = JSON.parse(data["stdout"] || "{}");
-        } catch (ex) {
-            errorMessage = i18n("Invalid backend response: %1", ex);
-            return;
-        }
-        recordingActive = Boolean(response.active);
-        hasUnlistedMutes = Boolean(response.hasUnlistedMutes);
-        apps = response.apps || [];
         syncVisibleRows();
-        errorMessage = response.error || "";
+        Qt.callLater(root.startNextAction);
     }
 
-    Plasma5Support.DataSource {
-        id: commandEngine
-        engine: "executable"
-        connectedSources: []
-        onNewData: function(source, data) {
-            disconnectSource(source);
-            root.updateState(source, data);
+    Component {
+        id: requestSource
+        Plasma5Support.DataSource {
+            id: worker
+            property string action
+            property string key
+            property string command
+            engine: "executable"
+            onNewData: function(source, data) {
+                if (source === worker.command) {
+                    root.completeRequest(worker, data);
+                }
+            }
         }
+    }
+
+    Timer {
+        id: requestTimeout
+        interval: 25000
+        onTriggered: root.completeRequest(root.activeRequest, null)
     }
 
     Timer {
@@ -220,7 +269,7 @@ PlasmoidItem {
                 Layout.alignment: Qt.AlignLeft
                 Layout.margins: Kirigami.Units.smallSpacing * 2
                 text: i18n("Share all audio")
-                enabled: root.hasUnlistedMutes || root.apps.some(function(app) { return app.muted; })
+                enabled: root.hasMutes
                 onClicked: root.request("share-all", "")
             }
 
@@ -251,8 +300,9 @@ PlasmoidItem {
                 Layout.rightMargin: Kirigami.Units.smallSpacing * 2
                 Layout.bottomMargin: Kirigami.Units.smallSpacing
                 visible: text.length > 0
-                text: root.errorMessage || (!root.recordingActive && root.apps.length > 0 ? i18n("No active Discord stream") : "")
-                wrapMode: Text.WordWrap
+                text: root.errorMessage || (!root.recordingActive && visibleRows.count > 0 ? i18n("No active Discord stream") : "")
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
                 color: root.errorMessage ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.disabledTextColor
                 font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             }
@@ -280,6 +330,7 @@ PlasmoidItem {
                         required property string name
                         required property string icon
                         required property string iconCategory
+                        required property bool shared
                         required property bool muted
                         width: ListView.view.width
                         height: Kirigami.Units.gridUnit * 2.75
@@ -303,12 +354,26 @@ PlasmoidItem {
                             anchors.rightMargin: Kirigami.Units.smallSpacing * 2
                             spacing: Kirigami.Units.smallSpacing * 2
 
-                            Kirigami.Icon {
-                                readonly property url categoryIcon: Qt.resolvedUrl("../icons/fallback/" + sourceRow.iconCategory + ".png")
-                                source: sourceRow.icon || categoryIcon
-                                fallback: decodeURIComponent(categoryIcon.toString().replace(/^file:\/\//, ""))
+                            Item {
                                 Layout.preferredWidth: Kirigami.Units.iconSizes.medium
                                 Layout.preferredHeight: Kirigami.Units.iconSizes.medium
+
+                                Kirigami.Icon {
+                                    id: applicationIcon
+                                    anchors.fill: parent
+                                    source: sourceRow.icon
+                                    fallback: ""
+                                    visible: sourceRow.icon.length > 0
+                                }
+
+                                Image {
+                                    anchors.fill: parent
+                                    visible: !applicationIcon.visible || applicationIcon.status !== Kirigami.Icon.Ready
+                                    source: visible ? Qt.resolvedUrl("../icons/fallback/" + sourceRow.iconCategory + ".png") : ""
+                                    sourceSize.width: Math.ceil(width * Screen.devicePixelRatio)
+                                    sourceSize.height: Math.ceil(height * Screen.devicePixelRatio)
+                                    fillMode: Image.PreserveAspectFit
+                                }
                             }
 
                             ColumnLayout {
@@ -317,6 +382,7 @@ PlasmoidItem {
                                 PlasmaComponents.Label {
                                     Layout.fillWidth: true
                                     text: sourceRow.name
+                                    textFormat: Text.PlainText
                                     elide: Text.ElideRight
                                     color: Kirigami.Theme.textColor
                                 }
@@ -325,7 +391,7 @@ PlasmoidItem {
                                     visible: text.length > 0
                                     text: sourceRow.muted ? (root.recordingActive ? i18n("Muted in Discord stream") :
                                                                                   i18n("Muted for next stream")) :
-                                          root.recordingActive ? i18n("Being shared") : ""
+                                          sourceRow.shared ? i18n("Being shared") : ""
                                     elide: Text.ElideRight
                                     color: Kirigami.Theme.disabledTextColor
                                     font.pixelSize: Kirigami.Theme.smallFont.pixelSize
@@ -337,7 +403,7 @@ PlasmoidItem {
                                 hoverEnabled: true
                                 display: QQC2.AbstractButton.IconOnly
                                 icon.source: Qt.resolvedUrl(sourceRow.muted ? "../icons/muted.svg" : "../icons/audible.svg")
-                                onClicked: root.request("mute", sourceRow.key)
+                                onClicked: root.request(sourceRow.muted ? "set-unmuted" : "set-muted", sourceRow.key)
                             }
                         }
                     }

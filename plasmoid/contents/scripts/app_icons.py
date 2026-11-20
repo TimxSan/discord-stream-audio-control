@@ -3,16 +3,16 @@ import os
 import re
 import shlex
 from pathlib import Path
-from typing import NamedTuple
 
 
 _UNHELPFUL = {'', 'wine', 'wine64', 'wine64preloader', 'python', 'python3', 'steam',
               'pipewire', 'pulse', 'pulseaudio', 'alsaaudio', 'audiostream'}
 
 
-class Application(NamedTuple):
-    name: str
-    icon: str
+class Application:
+    def __init__(self, name: str, icon: str):
+        self.name = name
+        self.icon = icon
 
 
 def normalize(value):
@@ -49,6 +49,8 @@ def read_desktop(path):
     config = configparser.ConfigParser(interpolation=None, strict=False)
     config.optionxform = str
     try:
+        if not path.is_file():
+            return None
         with path.open('r', encoding='utf-8', errors='replace') as source:
             config.read_file(source)
         if 'Desktop Entry' not in config or config['Desktop Entry'].get('Type') != 'Application':
@@ -91,6 +93,7 @@ class ApplicationResolver:
         self.by_binary = {}
         self.by_icon = {}
         self.by_short_id = {}
+        self._steam_games = None
         self._loaded = False
 
     def _load(self):
@@ -112,7 +115,7 @@ class ApplicationResolver:
                         short_id = normalize(ident.rsplit('.', 1)[-1])
                         if short_id not in _UNHELPFUL:
                             previous = self.by_short_id.setdefault(short_id, application)
-                            if previous != application:
+                            if previous is None or (previous.name, previous.icon) != (application.name, application.icon):
                                 self.by_short_id[short_id] = None
                 for field in ('name', 'wmclass'):
                     key = normalize(entry[field])
@@ -166,53 +169,61 @@ class ApplicationResolver:
         return binary[:1].upper() + binary[1:]
 
     @staticmethod
-    def _steam_application(*names):
-        keys = {normalize(name) for name in names}
-        keys.discard('')
-        if not keys:
-            return None
+    def _load_steam_games():
         home = Path.home()
-        roots = [home / '.local/share/Steam', home / '.steam/steam', home / '.steam/root']
-        roots = [root for root in dict.fromkeys(roots) if root.is_dir()]
-        if not roots:
-            return None
+        candidates = [home / '.local/share/Steam', home / '.steam/steam', home / '.steam/root']
+        roots = list(dict.fromkeys(root.resolve() for root in candidates if root.is_dir()))
         libraries = []
         for root in roots:
             libraries.append(root / 'steamapps')
             folders = root / 'steamapps/libraryfolders.vdf'
             try:
+                if not folders.is_file():
+                    continue
                 data = folders.read_text(encoding='utf-8', errors='replace')
             except OSError:
                 continue
             for raw in re.findall(r'"path"\s+"([^"]+)"', data):
                 libraries.append(Path(raw.replace('\\\\', '/')) / 'steamapps')
+        games = {}
         for library in dict.fromkeys(libraries):
             if not library.is_dir():
                 continue
             for manifest in library.glob('appmanifest_*.acf'):
                 try:
+                    if not manifest.is_file():
+                        continue
                     data = manifest.read_text(encoding='utf-8', errors='replace')
                 except OSError:
                     continue
                 match = re.search(r'"name"\s+"([^"]+)"', data, re.IGNORECASE)
-                if not match or normalize(match.group(1)) not in keys:
-                    continue
-                name = match.group(1)
-                appid = manifest.stem.removeprefix('appmanifest_')
-                for root in roots:
-                    for path in (root / f'appcache/librarycache/{appid}_icon.jpg',
-                                 root / f'appcache/librarycache/{appid}_icon.png',
-                                 root / f'appcache/librarycache/{appid}/icon.jpg',
-                                 root / f'steam/games/{appid}_icon.jpg'):
-                        if path.is_file():
-                            return Application(name, str(path))
-                for base in (home / '.local/share/icons/hicolor', Path('/usr/share/icons/hicolor')):
-                    if base.is_dir():
-                        for path in base.glob(f'*/apps/steam_icon_{appid}.*'):
-                            if path.is_file():
-                                return Application(name, str(path))
-                return Application(name, '')
-        return None
+                if match:
+                    name = match.group(1)
+                    appid = manifest.stem.removeprefix('appmanifest_')
+                    games.setdefault(normalize(name), (name, appid))
+        return roots, games
+
+    def _steam_application(self, *names):
+        if self._steam_games is None:
+            self._steam_games = self._load_steam_games()
+        roots, games = self._steam_games
+        match = next((games[key] for key in map(normalize, names) if key and key in games), None)
+        if not match:
+            return None
+        name, appid = match
+        for root in roots:
+            for path in (root / f'appcache/librarycache/{appid}_icon.jpg',
+                         root / f'appcache/librarycache/{appid}_icon.png',
+                         root / f'appcache/librarycache/{appid}/icon.jpg',
+                         root / f'steam/games/{appid}_icon.jpg'):
+                if path.is_file():
+                    return Application(name, str(path))
+        data_home = Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local/share')
+        for base in (data_home / 'icons/hicolor', Path('/usr/share/icons/hicolor')):
+            for path in base.glob(f'*/apps/steam_icon_{appid}.*'):
+                if path.is_file():
+                    return Application(name, str(path))
+        return Application(name, '')
 
 
 CATEGORIES = {

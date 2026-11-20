@@ -1,10 +1,10 @@
-
-
 import fcntl
 import json
 import logging
 import os
+import stat
 import subprocess
+import time
 import unicodedata
 from pathlib import Path
 
@@ -15,18 +15,47 @@ CONFIG = Path.home() / '.config' / APP_ID / 'settings.json'
 STATE_DIR = Path.home() / '.local' / 'state' / APP_ID
 STATE = STATE_DIR / 'session.json'
 LOCK = STATE_DIR / 'backend.lock'
-DISCORD_APP_KEYS = {'discord', 'com.discordapp.discord'}
+DISCORD_APP_KEYS = {'discord', 'discordcanary', 'discordptb', 'discorddevelopment',
+                    'com.discordapp.discord', 'com.discordapp.discordcanary', 'com.discordapp.discordptb'}
+ROUTING_ERRORS = (OSError, RuntimeError, subprocess.TimeoutExpired)
 
 
-def command(*args):
-    result = subprocess.run(args, check=False, capture_output=True, text=True, timeout=8)
+class AudioPort:
+    def __init__(self, id: int, name: tuple[str, str], source: str, selectable: bool):
+        self.id = id
+        self.name = name
+        self.source = source
+        self.selectable = selectable
+
+
+class AudioGraph:
+    def __init__(self, cookie: int, capture_active: bool, sources: dict,
+                 outputs: dict[int, AudioPort], inputs: dict[int, AudioPort], links: dict[tuple[int, int], bool]):
+        self.cookie = cookie
+        self.capture_active = capture_active
+        self.sources = sources
+        self.outputs = outputs
+        self.inputs = inputs
+        self.links = links
+
+
+def command(deadline, *args):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError('The PipeWire request timed out')
+    result = subprocess.run(args, check=False, capture_output=True, encoding='utf-8', errors='replace',
+                            timeout=min(4, remaining))
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or repr(args))
     return result.stdout
 
 
+def info(obj):
+    return (obj or {}).get('info') or {}
+
+
 def properties(obj):
-    return (obj or {}).get('info', {}).get('props', {}) or {}
+    return info(obj).get('props') or {}
 
 
 def app_key(node):
@@ -54,14 +83,23 @@ def is_capture(node):
     return props.get('media.class') == 'Stream/Input/Audio' and str(props.get('node.name', '')).startswith('discord_capture')
 
 
-def load_json(path, fallback):
+def is_discord_playback(node):
+    props = properties(node)
+    fields = ('application.process.binary', 'application.id', 'application.name', 'node.name')
+    return any(Path(str(props.get(field) or '')).name.casefold().removesuffix('.desktop') in DISCORD_APP_KEYS
+               for field in fields)
+
+
+def load_json(path):
     try:
+        if not stat.S_ISREG(path.stat().st_mode):
+            raise ValueError(f'Invalid {path.name}')
         data = json.loads(path.read_text(encoding='utf-8'))
-        if isinstance(data, dict):
-            return data
-    except (OSError, ValueError, TypeError):
-        pass
-    return fallback.copy()
+    except FileNotFoundError:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f'Invalid {path.name}')
+    return data
 
 
 def save_json(path, value):
@@ -71,218 +109,277 @@ def save_json(path, value):
     os.replace(temp, path)
 
 
-def port_identity(port, nodes):
-    port_props = properties(port)
-    node_props = properties(nodes.get(int(port_props.get('node.id', -1))))
-    return [str(node_props.get('node.name', '')), str(port_props.get('port.name', ''))]
+def string_set(data, key):
+    values = data.get(key, [])
+    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+        raise ValueError(f'Invalid {key}')
+    return set(values)
 
 
-def port_from_identity(identity, ports, nodes):
-    for port_id, port in ports.items():
-        if port_identity(port, nodes) == identity:
-            return port_id
-    return None
+def port_node_id(port):
+    try:
+        return int(properties(port).get('node.id', -1))
+    except (TypeError, ValueError):
+        return -1
 
 
-def pair_key(pair):
-    return json.dumps(pair, ensure_ascii=False, separators=(',', ':'))
-
-
-def build_graph(data):
-    nodes = {entry['id']: entry for entry in data if entry.get('type', '').endswith(':Node')}
-    ports = {entry['id']: entry for entry in data if entry.get('type', '').endswith(':Port')}
-    captures = {node_id for node_id, node in nodes.items() if is_capture(node)}
-    capture_inputs = {
-        port_id for port_id, port in ports.items()
-        if int(properties(port).get('node.id', -1)) in captures
-    }
-    links = []
-    for link in data:
-        if not link.get('type', '').endswith(':Link'):
-            continue
-        info = link.get('info') or {}
-        input_id, output_id = info.get('input-port-id'), info.get('output-port-id')
-        if input_id not in capture_inputs or output_id not in ports:
-            continue
-        source_id = int(properties(ports[output_id]).get('node.id', -1))
-        source = nodes.get(source_id)
-        if not source or properties(source).get('media.class') != 'Stream/Output/Audio':
-            continue
-        links.append((output_id, input_id, source))
-    return nodes, ports, captures, links
+def port_direction(port):
+    return info(port).get('direction') or properties(port).get('port.direction')
 
 
 def active_audio_nodes(nodes, ports):
-
-    outputs = set()
-    for port in ports.values():
-        pp = properties(port)
-        try:
-            node_id = int(pp.get('node.id', -1))
-        except (TypeError, ValueError):
-            continue
-        name = str(pp.get('port.name', ''))
-        direction = str(pp.get('port.direction', '')).lower()
-        if direction == 'out' or name.startswith('output_'):
-            outputs.add(node_id)
-    for node_id, node in nodes.items():
-        p = properties(node)
-        if p.get('media.class') != 'Stream/Output/Audio':
-            continue
-        if str(p.get('node.virtual', '')).lower() in ('true', '1'):
-            continue
-        if node_id in outputs:
+    outputs = {port_node_id(port) for port in ports.values() if port_direction(port) in ('out', 'output')}
+    for node_id in sorted(outputs & nodes.keys()):
+        node = nodes[node_id]
+        props = properties(node)
+        if (props.get('media.class') == 'Stream/Output/Audio'
+                and str(props.get('node.virtual', '')).lower() not in ('true', '1')
+                and not is_discord_playback(node)):
             yield node_id, node
 
 
-def refresh(state, remembered=()):
-    data = json.loads(command('pw-dump'))
-    nodes, ports, captures, links = build_graph(data)
+def build_graph(data) -> AudioGraph:
+    if not isinstance(data, list) or any(not isinstance(entry, dict) for entry in data):
+        raise ValueError('Invalid PipeWire graph')
+    cookie = next((info(entry).get('cookie') for entry in data if entry.get('type', '').endswith(':Core')), None)
+    if type(cookie) is not int:
+        raise ValueError('PipeWire did not report the audio server identity')
+    nodes = {entry['id']: entry for entry in data if entry.get('type', '').endswith(':Node')}
+    ports = {entry['id']: entry for entry in data if entry.get('type', '').endswith(':Port')}
+    captures = {node_id for node_id, node in nodes.items() if is_capture(node)}
+    live_nodes = dict(active_audio_nodes(nodes, ports))
+    sources = {}
+    for node in live_nodes.values():
+        sources.setdefault(app_key(node), []).append(node)
 
-    resolver = ApplicationResolver()
-    live_apps, categories, icons = {}, {}, {}
-    for _node_id, source in sorted(active_audio_nodes(nodes, ports)):
-        key = app_key(source)
-        props = properties(source)
-        app = resolver.resolve(props, app_name(source))
-        if key in live_apps and (icons[key] or not app.icon):
+    outputs, inputs, output_serials, input_serials = {}, {}, {}, {}
+    for port_id, port in ports.items():
+        node_id = port_node_id(port)
+        node = nodes.get(node_id)
+        direction = port_direction(port)
+        media_class = properties(node).get('media.class')
+        if node_id in captures and direction in ('in', 'input'):
+            endpoints, serials, key = inputs, input_serials, ''
+        elif media_class == 'Stream/Output/Audio' and direction in ('out', 'output'):
+            endpoints, serials, key = outputs, output_serials, app_key(node)
+        else:
             continue
-        live_apps[key] = app.name
-        binary = str(props.get('application.process.binary') or '').split('/')[-1]
-        categories[key] = category_for_source(key, live_apps[key], binary)
-        icons[key] = app.icon
+        serial = properties(port).get('object.serial')
+        if type(serial) is not int or serial in endpoints:
+            raise ValueError('PipeWire did not report a unique audio port identity')
+        name = (str(properties(node).get('node.name', '')), str(properties(port).get('port.name', '')))
+        endpoints[serial] = AudioPort(port_id, name, key, node_id in live_nodes)
+        serials[port_id] = serial
 
-    live_keys = set(live_apps)
-    muted = set()
+    links = {}
+    for entry in data:
+        if not entry.get('type', '').endswith(':Link'):
+            continue
+        details = info(entry)
+        output_id, input_id = details.get('output-port-id'), details.get('input-port-id')
+        if output_id not in output_serials or input_id not in input_serials:
+            continue
+        output_node, input_node = port_node_id(ports[output_id]), port_node_id(ports[input_id])
+        if details.get('output-node-id', output_node) != output_node or details.get('input-node-id', input_node) != input_node:
+            continue
+        pair = (output_serials[output_id], input_serials[input_id])
+        links[pair] = links.get(pair, False) or details.get('state') != 'error'
+    return AudioGraph(cookie, bool(captures), sources, outputs, inputs, links)
+
+
+def saved_endpoint(value, ports, key=''):
+    if type(value) is int:
+        return value if value in ports and ports[value].source == key else None
+    if isinstance(value, list) and value:
+        if len(value) == 2 and all(isinstance(name, str) for name in value):
+            matches = sorted(serial for serial, port in ports.items() if port.source == key and port.name == tuple(value))
+            if len(matches) == 1:
+                return matches[0]
+            return tuple(matches) or None
+        if all(type(serial) is int for serial in value):
+            matches = tuple(serial for serial in value if serial in ports and ports[serial].source == key)
+            return matches or None
+    raise ValueError('Invalid saved audio port identity')
+
+
+def current_saved_links(state, records, graph):
+    if 'core_cookie' in state and state['core_cookie'] != graph.cookie:
+        return {}
     saved = {}
-    if captures:
-        muted = (set(state.get('muted', [])) | set(remembered)) & live_keys
-        saved = {key: records for key, records in state.get('saved_links', {}).items() if key in live_keys}
-    disconnect = set()
-    errors = []
-    for output_id, input_id, source in links:
-        key = app_key(source)
-        if key in muted:
-            pair = [port_identity(ports[output_id], nodes), port_identity(ports[input_id], nodes)]
-            records = saved.setdefault(key, [])
-            if all(pair_key(old) != pair_key(pair) for old in records):
-                records.append(pair)
-            disconnect.add((output_id, input_id))
-    for output_id, input_id in sorted(disconnect):
-        try:
-            command('pw-link', '-d', str(output_id), str(input_id))
-        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            logging.warning('Failed to disconnect %s:%s: %s', output_id, input_id, exc)
-            errors.append(str(exc))
-    state['muted'] = sorted(muted)
-    state['saved_links'] = saved
-    state['cached_apps'] = live_apps
-    state['icon_categories'] = categories
-    state['app_icons'] = icons
-    state['active'] = bool(captures)
-    state['error'] = '; '.join(errors)[:500]
-    return state, nodes, ports, links, live_keys
+    for key, pairs in records.items():
+        if not isinstance(pairs, list):
+            raise ValueError('Invalid saved audio links')
+        for pair in pairs:
+            if not isinstance(pair, list) or len(pair) != 2:
+                raise ValueError('Invalid saved audio link')
+            output = saved_endpoint(pair[0], graph.outputs, key)
+            target = saved_endpoint(pair[1], graph.inputs)
+            if output is not None and target is not None:
+                saved.setdefault(key, set()).add((output, target))
+    return saved
 
 
-def unmute(state, key):
-    pairs = state.get('saved_links', {}).get(key, [])
-    if not pairs:
-
-        state['muted'] = sorted(set(state.get('muted', [])) - {key})
-        return ''
-    data = json.loads(command('pw-dump'))
-    nodes, ports, _captures, _links = build_graph(data)
-    existing = {
-        ((entry.get('info') or {}).get('output-port-id'), (entry.get('info') or {}).get('input-port-id'))
-        for entry in data if entry.get('type', '').endswith(':Link')
+def save_session(previous, cookie, saved, session_muted):
+    links = {
+        key: [[list(port) if isinstance(port, tuple) else port for port in pair]
+              for pair in sorted(pairs, key=repr)]
+        for key, pairs in saved.items()
     }
-    failures = []
-    for out_identity, in_identity in pairs:
-        output_id = port_from_identity(out_identity, ports, nodes)
-        input_id = port_from_identity(in_identity, ports, nodes)
-        if output_id is None or input_id is None:
-            failures.append('Audio port is no longer available')
-            continue
-        if (output_id, input_id) not in existing:
-            try:
-                command('pw-link', str(output_id), str(input_id))
-                logging.info('Reconnect %s -> %s', out_identity, in_identity)
-            except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-                failures.append(str(exc))
-    if failures:
-        return 'Unmute: ' + '; '.join(failures)[:400]
-    state['muted'] = sorted(set(state.get('muted', [])) - {key})
-    state['saved_links'].pop(key, None)
-    return ''
-
-
-def app_sort_key(item):
-    key, name = item
-    folded = unicodedata.normalize('NFKD', name.casefold())
-    alphabetical = ''.join(character for character in folded if not unicodedata.combining(character))
-    return alphabetical, key.casefold(), key
-
-
-def response(state, remembered):
-    muted = set(state.get('muted', [])) | remembered
-    categories = state.get('icon_categories', {})
-    icons = state.get('app_icons', {})
-    apps = [
-        {'key': key, 'name': name, 'icon': icons.get(key, ''), 'iconCategory': categories.get(key, 'generic'),
-         'muted': key in muted}
-        for key, name in sorted(state.get('cached_apps', {}).items(), key=app_sort_key)
-        if key.startswith('node:') or Path(key).name.casefold().removesuffix('.desktop') not in DISCORD_APP_KEYS
-    ]
-    return {
-        'active': bool(state.get('active')),
-        'apps': apps,
-        'hasUnlistedMutes': bool(muted.difference(app['key'] for app in apps)),
-        'error': state.get('error', ''),
-    }
-
-
-def handle(action, key=''):
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with LOCK.open('a+b') as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        state = load_json(STATE, {'muted': [], 'saved_links': {}, 'cached_apps': {}, 'active': False, 'error': ''})
-        state.pop('cached_icons', None)
-        state.pop('cached_meta', None)
-        config = load_json(CONFIG, {})
-        remembered = set(config.get('muted_apps', []))
-        try:
-            restore_all = action in ('share-all', 'reset')
-            state, _, _, _, live_keys = refresh(state, () if restore_all else remembered)
-            if restore_all:
-                failures = []
-                for muted_key in list(state.get('muted', [])):
-                    failure = unmute(state, muted_key)
-                    if failure:
-                        failures.append(failure)
-                state['error'] = '; '.join(failures)[:500]
-                if not failures:
-                    remembered.clear()
-                elif action == 'share-all':
-                    remembered.intersection_update(state['muted'])
-            elif action == 'toggle-mute' and key in live_keys:
-                if key in state['muted'] or key in remembered:
-                    failure = unmute(state, key) if state['active'] else ''
-                    if failure:
-                        state['error'] = failure
-                    else:
-                        remembered.discard(key)
-                else:
-                    remembered.add(key)
-                    if state['active']:
-                        state['muted'] = sorted(set(state['muted']) | {key})
-                        state, _, _, _, _ = refresh(state, remembered)
-        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            state['error'] = f'PipeWire: {exc}'
-            logging.exception('PipeWire request failed')
+    state = {'core_cookie': cookie, 'saved_links': links, 'muted': sorted(session_muted & saved.keys())} if links else {}
+    if state != previous:
         save_json(STATE, state)
-        muted_apps = sorted(remembered)
-        if 'remember_muted' in config or muted_apps != config.get('muted_apps', []):
-            config.pop('remember_muted', None)
-            config['muted_apps'] = muted_apps
-            save_json(CONFIG, config)
-    return response(state, remembered)
+    return state
+
+
+def save_preferences(config, remembered):
+    muted_apps = sorted(remembered)
+    if 'remember_muted' in config or muted_apps != config.get('muted_apps', []):
+        config.pop('remember_muted', None)
+        config['muted_apps'] = muted_apps
+        save_json(CONFIG, config)
+
+
+def unmute(graph: AudioGraph, pairs, deadline):
+    remaining = set()
+    errors = []
+    for pair in sorted(pairs, key=repr):
+        output, target = pair
+        if isinstance(output, tuple) or isinstance(target, tuple):
+            remaining.add(pair)
+            errors.append('A saved audio link has ambiguous port names')
+            continue
+        if graph.links.get(pair):
+            continue
+        try:
+            command(deadline, 'pw-link', '-w', str(graph.outputs[output].id), str(graph.inputs[target].id))
+        except ROUTING_ERRORS as exc:
+            logging.warning('Failed to restore audio link %s: %s', pair, exc)
+            remaining.add(pair)
+            errors.append(str(exc))
+        else:
+            graph.links[pair] = True
+    return remaining, errors
+
+
+def refresh(state, graph: AudioGraph, saved, session_muted, remembered, deadline) -> list[str]:
+    wanted = remembered | session_muted
+    disconnect = []
+    for pair in sorted(graph.links):
+        port = graph.outputs[pair[0]]
+        if port.selectable and port.source in wanted:
+            saved.setdefault(port.source, set()).add(pair)
+            disconnect.append(pair)
+
+    journal = save_session(state, graph.cookie, saved, session_muted)
+    errors = []
+    for output, target in disconnect:
+        try:
+            command(deadline, 'pw-link', '-d', str(graph.outputs[output].id), str(graph.inputs[target].id))
+        except ROUTING_ERRORS as exc:
+            logging.warning('Failed to disconnect audio link %s:%s: %s', output, target, exc)
+            errors.append(str(exc))
+        else:
+            graph.links.pop((output, target))
+    for key in sorted(saved.keys() - wanted):
+        remaining, failures = unmute(graph, saved[key], deadline)
+        errors.extend(failures)
+        if remaining:
+            saved[key] = remaining
+        else:
+            del saved[key]
+    save_session(journal, graph.cookie, saved, session_muted)
+    return errors
+
+
+def app_sort_key(app):
+    folded = unicodedata.normalize('NFKD', app['name'].casefold())
+    alphabetical = ''.join(character for character in folded if not unicodedata.combining(character))
+    return alphabetical, app['key'].casefold(), app['key']
+
+
+def response(graph, muted, errors):
+    error = '; '.join(dict.fromkeys(errors))[:500]
+    if graph is None:
+        return {'error': error}
+    resolver = ApplicationResolver()
+    shared = {graph.outputs[output].source for (output, _), linked in graph.links.items()
+              if linked and graph.outputs[output].selectable}
+    apps = {}
+    for key, nodes in graph.sources.items():
+        for node in nodes:
+            props = properties(node)
+            app = resolver.resolve(props, app_name(node))
+            if key not in apps or app.icon:
+                binary = Path(str(props.get('application.process.binary') or '')).name
+                apps[key] = {'key': key, 'name': app.name, 'icon': app.icon,
+                             'iconCategory': category_for_source(key, app.name, binary),
+                             'muted': key in muted, 'shared': key in shared}
+            if app.icon:
+                break
+    return {
+        'active': graph.capture_active,
+        'apps': sorted(apps.values(), key=app_sort_key),
+        'hasUnlistedMutes': bool(muted - graph.sources.keys()),
+        'error': error,
+    }
+
+
+def handle_locked(action, key, deadline, uninstalling):
+    state = load_json(STATE)
+    records = state.get('saved_links', {})
+    if not isinstance(records, dict):
+        raise ValueError('Invalid saved audio links')
+    config = {} if uninstalling else load_json(CONFIG)
+    remembered = string_set(config, 'muted_apps')
+    restore_all = action in ('share-all', 'reset')
+    if action == 'reset' and not records:
+        if not uninstalling:
+            save_preferences(config, set())
+        return None, set(), []
+
+    graph = build_graph(json.loads(command(deadline, 'pw-dump')))
+    saved = current_saved_links(state, records, graph)
+    session_muted = (string_set(state, 'muted') & saved.keys()) - remembered
+    if restore_all:
+        remembered.clear()
+        session_muted.clear()
+    elif action == 'set-unmuted' or (action == 'toggle-mute' and key in remembered | session_muted | saved.keys()):
+        remembered.discard(key)
+        session_muted.discard(key)
+    elif action in ('set-muted', 'toggle-mute') and key in graph.sources:
+        remembered.add(key)
+
+    if action != 'reset':
+        save_preferences(config, remembered)
+    errors = refresh(state, graph, saved, session_muted, remembered, deadline)
+    if action == 'reset':
+        if not errors and not uninstalling:
+            save_preferences(config, remembered)
+        return None, set(), errors
+    return graph, remembered | saved.keys(), errors
+
+
+def handle(action, key='', lock_fd=None):
+    deadline = time.monotonic() + 18
+    module_path = Path(__file__)
+    if not module_path.is_file():
+        raise RuntimeError('The widget has been removed')
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    lock_file = LOCK.open('a+b') if lock_fd is None else os.fdopen(os.dup(lock_fd), 'rb')
+    try:
+        if lock_fd is not None and not os.path.samestat(os.fstat(lock_fd), LOCK.stat()):
+            raise ValueError('Invalid audio backend lock')
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('The audio backend is busy')
+                time.sleep(0.05)
+        if not module_path.is_file():
+            raise RuntimeError('The widget has been removed')
+        graph, muted, errors = handle_locked(action, key, deadline, lock_fd is not None)
+    finally:
+        lock_file.close()
+    return response(graph, muted, errors)

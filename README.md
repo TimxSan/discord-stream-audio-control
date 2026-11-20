@@ -23,7 +23,7 @@ In **System Tray Settings → Entries**, find **Discord Stream Audio Control** a
 - Click the speaker icon next to an app to mute or unmute it for viewers, before or during a Discord screen share. The widget automatically saves and applies your selections across streams.
 - Select **Share all audio** to clear all saved mutes before or during a share and restore any muted audio in an active share.
 
-The list shows apps with a current audio output, including idle or muted sources. It excludes Discord's own playback.
+The list shows apps with a current audio output, including idle or muted sources. It excludes Discord's own playback. **Being shared** indicates that the app is linked to the Discord capture.
 
 ## Update
 
@@ -33,7 +33,7 @@ Run this command from your local clone with `main` checked out.
 git pull --ff-only origin main && bash install.sh
 ```
 
-The installer replaces the widget package and removes known leftover files from earlier versions. It keeps your saved mute settings and stream recovery state. See the [changelog](CHANGELOG.md) for recent changes.
+The installer replaces the widget package, installs the tray icon, and removes known leftover files from earlier versions. It keeps your saved mute settings and stream recovery state. See the [changelog](CHANGELOG.md) for recent changes.
 
 ## Uninstall
 

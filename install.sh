@@ -11,15 +11,26 @@ done
 
 data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 package_root="$data_home/plasma/plasmoids"
+staging="$(mktemp -d)"
+trap 'rm -rf -- "$staging"' EXIT
+cp -R -- "$root/plasmoid" "$staging/"
+rm -rf -- "$staging/plasmoid/contents/scripts/__pycache__"
 
 if [[ -d "$package_root/$widget_id" ]]; then
-  kpackagetool6 --type Plasma/Applet --packageroot "$package_root" --upgrade "$root/plasmoid"
+  kpackagetool6 --type Plasma/Applet --packageroot "$package_root" --upgrade "$staging/plasmoid"
 else
-  kpackagetool6 --type Plasma/Applet --packageroot "$package_root" --install "$root/plasmoid"
+  kpackagetool6 --type Plasma/Applet --packageroot "$package_root" --install "$staging/plasmoid"
 fi
 
 source "$root/cleanup-legacy-files.sh"
 remove_legacy_files "$data_home" "$widget_id"
+for size in 32 48 64 128 256 512; do
+  icon="$root/plasmoid/contents/icons/hicolor/${size}x${size}.png"
+  if [[ "$size" == 512 ]]; then
+    icon="$root/plasmoid/contents/icons/discord-stream-audio-control.png"
+  fi
+  install -Dm 644 -- "$icon" "$data_home/icons/hicolor/${size}x${size}/apps/$widget_id.png"
+done
 
 if command -v qdbus6 >/dev/null 2>&1; then
   qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "$(cat "$root/enable-tray.js")" >/dev/null 2>&1 || true
