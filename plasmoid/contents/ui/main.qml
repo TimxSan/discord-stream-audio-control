@@ -80,7 +80,7 @@ PlasmoidItem {
     }
     readonly property string backendPath: decodeURIComponent(Qt.resolvedUrl("../scripts/bridge.py").toString().replace(/^file:\/\//, ""))
 
-    Plasmoid.icon: "org.cachy.discordstreamaudiocontrol"
+    Plasmoid.icon: decodeURIComponent(Qt.resolvedUrl(".." + Plasmoid.metaData.iconName).toString().replace(/^file:\/\//, ""))
     Plasmoid.title: "Discord Stream Audio Control"
     toolTipMainText: ""
     toolTipSubText: ""

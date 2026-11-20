@@ -19,22 +19,13 @@ fi
 if command -v qdbus6 >/dev/null 2>&1; then
   qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "$(cat "$root/disable-tray.js")" >/dev/null 2>&1 || true
 fi
-icon_home="$data_home/icons/hicolor"
-rm -f -- "$icon_home/scalable/apps/$widget_id.svg"
-for size in 32 48 64 128 256 512; do
-  rm -f -- "$icon_home/${size}x${size}/apps/$widget_id.png"
-done
+source "$root/cleanup-legacy-files.sh"
+remove_legacy_files "$data_home" "$widget_id"
 if systemctl --user is-active --quiet plasma-plasmashell.service 2>/dev/null; then
   systemctl --user restart plasma-plasmashell.service || true
 fi
 
-legacy="$HOME/.config/autostart/stream-audio-control-tray.desktop.disabled"
-if [[ -f "$legacy" ]] && grep -Eq '^Exec=.*/\.local/bin/stream-audio-control([[:space:]]|$)' "$legacy"; then
-  rm -f -- "$legacy"
-fi
-legacy_icons="$data_home/stream-audio-control/fallback-icons"
-rm -f -- "$legacy_icons"/{voice,system,video,generic,music,games,browser,chat}.png
 rm -f -- "$config_dir/settings.json" "$config_dir/settings.tmp" \
   "$state_dir/session.json" "$state_dir/session.tmp" "$state_dir/backend.lock"
-rmdir -- "$config_dir" "$state_dir" "$legacy_icons" "$data_home/stream-audio-control" 2>/dev/null || true
+rmdir -- "$config_dir" "$state_dir" 2>/dev/null || true
 printf 'Uninstalled Discord Stream Audio Control and removed its settings and cache.\n'

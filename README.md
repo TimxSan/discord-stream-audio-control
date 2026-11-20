@@ -33,7 +33,7 @@ Run this command from your local clone with `main` checked out.
 git pull --ff-only origin main && bash install.sh
 ```
 
-The installer upgrades the existing widget and keeps your saved mute settings. See the [changelog](CHANGELOG.md) for recent changes.
+The installer replaces the widget package and removes known leftover files from earlier versions. It keeps your saved mute settings and stream recovery state. See the [changelog](CHANGELOG.md) for recent changes.
 
 ## Uninstall
 

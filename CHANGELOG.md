@@ -13,6 +13,8 @@
 - Identify program names and icons together so browser or voice channel labels do not override recognized applications.
 - Let Plasma manage the open audio-source popup when no Discord share is active.
 - Restore the bundled mute and unmute icons.
+- Load the tray icon directly from the bundled PNG.
+- Automatically remove obsolete package files, icon copies, fallback icon downloads, and launcher entries when updating.
 - Prefer installed application icons and use bundled category icons when an application icon is unavailable.
 - Remove Discord widget preferences, session files, and legacy icon downloads on uninstall after restoring audio routing.
 - Mute updates immediately, with the same hover handling as the Steam widget.
