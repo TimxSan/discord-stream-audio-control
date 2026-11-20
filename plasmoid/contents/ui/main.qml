@@ -12,6 +12,7 @@ PlasmoidItem {
     id: root
 
     property bool recordingActive: false
+    property bool hasUnlistedMutes: false
     property var apps: []
     property string errorMessage: ""
     property int requestId: 0
@@ -104,6 +105,9 @@ PlasmoidItem {
     }
 
     function optimisticUpdate(action, key) {
+        if (action === "share-all") {
+            hasUnlistedMutes = false;
+        }
         var updated = [];
         for (var i = 0; i < apps.length; ++i) {
             var next = Object.assign({}, apps[i]);
@@ -155,6 +159,7 @@ PlasmoidItem {
             return;
         }
         recordingActive = Boolean(response.active);
+        hasUnlistedMutes = Boolean(response.hasUnlistedMutes);
         apps = response.apps || [];
         syncVisibleRows();
         errorMessage = response.error || "";
@@ -211,27 +216,18 @@ PlasmoidItem {
             anchors.fill: parent
             spacing: 0
 
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.smallSpacing
-                Layout.rightMargin: Kirigami.Units.smallSpacing
-                Layout.preferredHeight: Kirigami.Units.gridUnit * 2.6
-                spacing: Kirigami.Units.smallSpacing
-
-                Item { Layout.fillWidth: true }
-
-                PlasmaComponents.ToolButton {
-                    text: i18n("Share all audio")
-                    enabled: root.recordingActive && root.apps.some(function(app) { return app.muted; })
-                    onClicked: root.request("share-all", "")
-                }
+            PlasmaComponents.ToolButton {
+                Layout.alignment: Qt.AlignLeft
+                Layout.margins: Kirigami.Units.smallSpacing * 2
+                text: i18n("Share all audio")
+                enabled: root.hasUnlistedMutes || root.apps.some(function(app) { return app.muted; })
+                onClicked: root.request("share-all", "")
             }
 
             RowLayout {
                 Layout.fillWidth: true
                 Layout.leftMargin: Kirigami.Units.smallSpacing * 2
                 Layout.rightMargin: Kirigami.Units.smallSpacing * 2
-                Layout.topMargin: Kirigami.Units.smallSpacing
                 Layout.bottomMargin: Kirigami.Units.smallSpacing
                 spacing: Kirigami.Units.smallSpacing
 

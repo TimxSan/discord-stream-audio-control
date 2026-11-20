@@ -233,7 +233,12 @@ def response(state, remembered):
         for key, name in sorted(state.get('cached_apps', {}).items(), key=app_sort_key)
         if key.startswith('node:') or Path(key).name.casefold().removesuffix('.desktop') not in DISCORD_APP_KEYS
     ]
-    return {'active': bool(state.get('active')), 'apps': apps, 'error': state.get('error', '')}
+    return {
+        'active': bool(state.get('active')),
+        'apps': apps,
+        'hasUnlistedMutes': bool(muted.difference(app['key'] for app in apps)),
+        'error': state.get('error', ''),
+    }
 
 
 def handle(action, key=''):
@@ -248,7 +253,7 @@ def handle(action, key=''):
         try:
             restore_all = action in ('share-all', 'reset')
             state, _, _, _, live_keys = refresh(state, () if restore_all else remembered)
-            if restore_all and (action == 'reset' or state['active']):
+            if restore_all:
                 failures = []
                 for muted_key in list(state.get('muted', [])):
                     failure = unmute(state, muted_key)

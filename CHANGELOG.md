@@ -5,7 +5,8 @@
 - Exclude Discord's own playback from the audio source list.
 - Remove the hide action and hidden-sources switch.
 - Remove the **Save mutes** switch and save mute selections automatically across Discord shares.
-- Restore **Share all audio** to unmute sources during a share and clear their saved mutes.
+- Use **Share all audio** to clear saved mutes before or during a Discord share.
+- Align **Share all audio** with the left edge of the audio sources section and center it vertically above the section.
 - Remove per-source mute and unmute tooltips.
 - List current audio sources even when no Discord stream is active.
 - Sort audio sources alphabetically by their displayed program name.
