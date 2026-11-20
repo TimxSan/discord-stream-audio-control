@@ -223,11 +223,8 @@ def app_sort_key(item):
     return alphabetical, key.casefold(), key
 
 
-def response(state, config):
-    remember_muted = bool(config.get('remember_muted'))
-    muted = set(state.get('muted', []))
-    if remember_muted:
-        muted.update(config.get('muted_apps', []))
+def response(state, remembered):
+    muted = set(state.get('muted', [])) | remembered
     categories = state.get('icon_categories', {})
     icons = state.get('app_icons', {})
     apps = [
@@ -236,8 +233,7 @@ def response(state, config):
         for key, name in sorted(state.get('cached_apps', {}).items(), key=app_sort_key)
         if key.startswith('node:') or Path(key).name.casefold().removesuffix('.desktop') not in DISCORD_APP_KEYS
     ]
-    return {'active': bool(state.get('active')), 'rememberMuted': remember_muted, 'apps': apps,
-            'error': state.get('error', '')}
+    return {'active': bool(state.get('active')), 'apps': apps, 'error': state.get('error', '')}
 
 
 def handle(action, key=''):
@@ -248,12 +244,10 @@ def handle(action, key=''):
         state.pop('cached_icons', None)
         state.pop('cached_meta', None)
         config = load_json(CONFIG, {})
-        remember_muted = bool(config.get('remember_muted'))
-        remembered = set(config.get('muted_apps', [])) if remember_muted else set()
+        remembered = set(config.get('muted_apps', []))
         try:
             restore_all = action in ('share-all', 'reset')
-            apply_remembered = not restore_all and (action, key) != ('set-remember', 'off')
-            state, _, _, _, live_keys = refresh(state, remembered if apply_remembered else ())
+            state, _, _, _, live_keys = refresh(state, () if restore_all else remembered)
             if restore_all and (action == 'reset' or state['active']):
                 failures = []
                 for muted_key in list(state.get('muted', [])):
@@ -265,10 +259,7 @@ def handle(action, key=''):
                     remembered.clear()
                 elif action == 'share-all':
                     remembered.intersection_update(state['muted'])
-            elif action == 'set-remember' and (key == 'on') != remember_muted:
-                remember_muted = key == 'on'
-                remembered = set(state['muted']) if remember_muted else set()
-            elif action == 'toggle-mute' and key in live_keys and (state['active'] or remember_muted):
+            elif action == 'toggle-mute' and key in live_keys:
                 if key in state['muted'] or key in remembered:
                     failure = unmute(state, key) if state['active'] else ''
                     if failure:
@@ -276,8 +267,7 @@ def handle(action, key=''):
                     else:
                         remembered.discard(key)
                 else:
-                    if remember_muted:
-                        remembered.add(key)
+                    remembered.add(key)
                     if state['active']:
                         state['muted'] = sorted(set(state['muted']) | {key})
                         state, _, _, _, _ = refresh(state, remembered)
@@ -286,8 +276,8 @@ def handle(action, key=''):
             logging.exception('PipeWire request failed')
         save_json(STATE, state)
         muted_apps = sorted(remembered)
-        if remember_muted != bool(config.get('remember_muted')) or muted_apps != config.get('muted_apps', []):
-            config['remember_muted'] = remember_muted
+        if 'remember_muted' in config or muted_apps != config.get('muted_apps', []):
+            config.pop('remember_muted', None)
             config['muted_apps'] = muted_apps
             save_json(CONFIG, config)
-    return response(state, config)
+    return response(state, remembered)

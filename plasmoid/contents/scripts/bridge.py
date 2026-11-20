@@ -7,7 +7,7 @@ from controller import handle
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['status', 'mute', 'set-remember', 'share-all', 'reset'])
+    parser.add_argument('action', choices=['status', 'mute', 'share-all', 'reset'])
     parser.add_argument('key', nargs='?', default='')
     parser.add_argument('nonce', nargs='?', default='0')
     args = parser.parse_args()
@@ -16,12 +16,10 @@ def main():
     except ValueError:
         parser.error('Invalid audio source key')
     else:
-        if args.action == 'set-remember' and key not in {'on', 'off'}:
-            parser.error('Expected on or off for saved mutes')
         try:
             result = handle('toggle-mute' if args.action == 'mute' else args.action, key)
         except Exception as exc:
-            result = {'active': False, 'rememberMuted': False, 'apps': [], 'error': str(exc)[:240]}
+            result = {'active': False, 'apps': [], 'error': str(exc)[:240]}
         print(json.dumps(result, ensure_ascii=False, separators=(',', ':')))
 
 

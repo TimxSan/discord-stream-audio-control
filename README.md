@@ -20,8 +20,7 @@ In **System Tray Settings → Entries**, find **Discord Stream Audio Control** a
 
 ## Use
 
-- Open the widget during a Discord screen share and click the speaker icon next to an app to mute or unmute it for viewers.
-- Turn on **Save mutes** to choose apps before sharing and reuse your selections across streams. Turning it off clears the saved selection and keeps mutes for the current stream.
+- Click the speaker icon next to an app to mute or unmute it for viewers, before or during a Discord screen share. The widget automatically saves and applies your selections across streams.
 - Select **Share all audio** during a share to restore muted sources and clear your saved selection.
 
 The list shows apps with a current audio output, including idle or muted sources. It excludes Discord's own playback.

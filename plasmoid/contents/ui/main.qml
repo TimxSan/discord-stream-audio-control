@@ -12,7 +12,6 @@ PlasmoidItem {
     id: root
 
     property bool recordingActive: false
-    property bool rememberMuted: false
     property var apps: []
     property string errorMessage: ""
     property int requestId: 0
@@ -105,18 +104,12 @@ PlasmoidItem {
     }
 
     function optimisticUpdate(action, key) {
-        if (action === "set-remember") {
-            rememberMuted = key === "on";
-            if (rememberMuted || recordingActive) {
-                return;
-            }
-        }
         var updated = [];
         for (var i = 0; i < apps.length; ++i) {
             var next = Object.assign({}, apps[i]);
             if (action === "mute" && next.key === key) {
                 next.muted = !Boolean(next.muted);
-            } else if (action === "set-remember" || action === "share-all") {
+            } else if (action === "share-all") {
                 next.muted = false;
             }
             updated.push(next);
@@ -162,7 +155,6 @@ PlasmoidItem {
             return;
         }
         recordingActive = Boolean(response.active);
-        rememberMuted = Boolean(response.rememberMuted);
         apps = response.apps || [];
         syncVisibleRows();
         errorMessage = response.error || "";
@@ -226,12 +218,7 @@ PlasmoidItem {
                 Layout.preferredHeight: Kirigami.Units.gridUnit * 2.6
                 spacing: Kirigami.Units.smallSpacing
 
-                PlasmaComponents.Switch {
-                    Layout.fillWidth: true
-                    text: i18n("Save mutes")
-                    checked: root.rememberMuted
-                    onToggled: root.request("set-remember", checked ? "on" : "off")
-                }
+                Item { Layout.fillWidth: true }
 
                 PlasmaComponents.ToolButton {
                     text: i18n("Share all audio")
@@ -350,16 +337,11 @@ PlasmoidItem {
                             }
 
                             PlasmaComponents.ToolButton {
-                                id: muteButton
                                 text: sourceRow.muted ? i18n("Unmute") : i18n("Mute")
                                 hoverEnabled: true
-                                enabled: root.recordingActive || root.rememberMuted
                                 display: QQC2.AbstractButton.IconOnly
                                 icon.source: Qt.resolvedUrl(sourceRow.muted ? "../icons/muted.svg" : "../icons/audible.svg")
                                 onClicked: root.request("mute", sourceRow.key)
-                                QQC2.ToolTip.text: muteButton.text
-                                QQC2.ToolTip.visible: muteButton.enabled && muteButton.hovered
-                                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
                             }
                         }
                     }
