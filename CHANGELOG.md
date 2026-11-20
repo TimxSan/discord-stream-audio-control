@@ -2,7 +2,8 @@
 
 ## Current update
 
-- Remove the hide action and hidden-sources switch. All current audio sources appear in the list.
+- Exclude Discord's own playback from the audio source list.
+- Remove the hide action and hidden-sources switch.
 - Use **Save mutes** to select apps before a share and mute them automatically when it starts.
 - Restore **Share all audio** to unmute sources during a share and clear their saved mutes.
 - Show hover tooltips for the mute and unmute actions.

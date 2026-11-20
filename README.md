@@ -1,27 +1,45 @@
 # Discord Stream Audio Control
 
-Native KDE Plasma 6 system tray widget to mute individual applications in Discord screen shares without affecting local playback.
+A native KDE Plasma 6 system tray widget for choosing which apps your viewers hear in a Discord screen share. Muting an app in the widget keeps it audible on your speakers or headphones.
+
+## Requirements
+
+- KDE Plasma 6 on Wayland with PipeWire and WirePlumber
+- `kpackagetool6`, `python3`, `pw-dump`, and `pw-link`
+- Git to fetch updates
 
 ## Install
 
+Run the installer from the repository directory.
+
 ```bash
-./install.sh
+bash install.sh
 ```
 
-In **System Tray Settings → Entries**, select **Shown When Relevant** for the widget.
+In **System Tray Settings → Entries**, find **Discord Stream Audio Control** and select **Shown When Relevant**. You can open the widget from the tray's hidden items to prepare mutes before sharing.
+
+## Use
+
+- Open the widget during a Discord screen share and click the speaker icon next to an app to mute or unmute it for viewers.
+- Turn on **Save mutes** to choose apps before sharing and reuse your selections across streams. Turning it off clears the saved selection and keeps mutes for the current stream.
+- Select **Share all audio** during a share to restore muted sources and clear your saved selection.
+
+The list shows apps with a current audio output, including idle or muted sources. It excludes Discord's own playback.
+
+## Update
+
+Run this command from your local clone with `main` checked out.
+
+```bash
+git pull --ff-only origin main && bash install.sh
+```
+
+The installer upgrades the existing widget and keeps your saved mute settings. See the [changelog](CHANGELOG.md) for recent changes.
 
 ## Uninstall
 
 ```bash
-./uninstall.sh
+bash uninstall.sh
 ```
 
-Uninstallation restores Discord audio links before removing the widget, its tray entries, icons, cache, session state, and saved preferences. If restoring the links fails, the script stops and keeps the recovery state.
-
-## Icons
-
-The widget uses installed application icons when it can identify them and bundled category icons as a fallback. The Discord tray icon and action icons are bundled.
-
-The widget lists all current audio sources even when no Discord stream is active.
-
-Turn on **Save mutes** to save your selections across streams and choose apps to mute before sharing. Turning it off clears the saved selection and keeps any mutes for the current stream. Use **Share all audio** during a share to restore audio and clear saved mutes.
+Uninstallation restores Discord audio links before removing the widget, its tray entry, and its saved settings. If restoring the links fails, the script stops and keeps the recovery state.

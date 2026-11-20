@@ -15,6 +15,7 @@ CONFIG = Path.home() / '.config' / APP_ID / 'settings.json'
 STATE_DIR = Path.home() / '.local' / 'state' / APP_ID
 STATE = STATE_DIR / 'session.json'
 LOCK = STATE_DIR / 'backend.lock'
+DISCORD_APP_KEYS = {'discord', 'com.discordapp.discord'}
 
 
 def command(*args):
@@ -233,6 +234,7 @@ def response(state, config):
         {'key': key, 'name': name, 'icon': icons.get(key, ''), 'iconCategory': categories.get(key, 'generic'),
          'muted': key in muted}
         for key, name in sorted(state.get('cached_apps', {}).items(), key=app_sort_key)
+        if key.startswith('node:') or Path(key).name.casefold().removesuffix('.desktop') not in DISCORD_APP_KEYS
     ]
     return {'active': bool(state.get('active')), 'rememberMuted': remember_muted, 'apps': apps,
             'error': state.get('error', '')}
